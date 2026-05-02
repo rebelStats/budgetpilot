@@ -176,6 +176,20 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
       <button class="btn btn-primary" onclick="getInsights()" id="btn-insights">✦ Get advice</button>
     </div>
     <div id="insights-content"></div>
+
+    <div class="card" style="margin-top:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div class="card-title" style="margin-bottom:0;">Ask a question</div>
+        <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="clearChat()">Clear chat</button>
+      </div>
+      <div id="chat-thread" style="display:flex;flex-direction:column;gap:12px;max-height:480px;overflow-y:auto;padding:8px 0;"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <input id="chat-input" type="text" placeholder="e.g. How much did I spend on coffee? What can I cut?"
+               style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:8px;font-size:14px;font-family:inherit;outline:none;"
+               onkeydown="if(event.key==='Enter'){sendChat();}">
+        <button class="btn btn-primary" onclick="sendChat()" id="chat-send">Send</button>
+      </div>
+    </div>
   </div>
 
   <!-- CONNECT VIEW -->
@@ -497,12 +511,85 @@ async function getInsights() {
   btn.disabled = false; btn.innerHTML = "✦ Get advice";
 }
 
+// ---- Chat ----
+const CHAT_KEY = "budgetpilot.chat.v1";
+let chatHistory = JSON.parse(localStorage.getItem(CHAT_KEY) || "[]");
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderChat() {
+  const thread = document.getElementById("chat-thread");
+  if (!chatHistory.length) {
+    thread.innerHTML = `<div style="color:var(--dim);font-size:13px;padding:8px;">Ask anything about your spending — e.g. "where can I save the most?", "how much on dining last month?", "any recurring charges I might have forgotten?"</div>`;
+    return;
+  }
+  thread.innerHTML = chatHistory.map(m => {
+    const isUser = m.role === "user";
+    const bg = isUser ? "var(--accent)" : "var(--surface)";
+    const color = isUser ? "#fff" : "var(--text)";
+    const align = isUser ? "flex-end" : "flex-start";
+    const text = escapeHtml(m.content).replace(/\n/g, "<br>");
+    return `<div style="display:flex;justify-content:${align};">
+      <div style="background:${bg};color:${color};padding:10px 14px;border-radius:12px;max-width:85%;font-size:14px;line-height:1.5;white-space:pre-wrap;">${text}</div>
+    </div>`;
+  }).join("");
+  thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendChat() {
+  const input = document.getElementById("chat-input");
+  const btn = document.getElementById("chat-send");
+  const text = input.value.trim();
+  if (!text) return;
+
+  chatHistory.push({ role: "user", content: text });
+  localStorage.setItem(CHAT_KEY, JSON.stringify(chatHistory));
+  input.value = "";
+  renderChat();
+
+  btn.disabled = true; btn.textContent = "…";
+  // Add a placeholder assistant message
+  const thread = document.getElementById("chat-thread");
+  thread.insertAdjacentHTML("beforeend", `<div id="chat-pending" style="display:flex;justify-content:flex-start;"><div style="background:var(--surface);color:var(--muted);padding:10px 14px;border-radius:12px;font-size:14px;">Thinking…</div></div>`);
+  thread.scrollTop = thread.scrollHeight;
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: chatHistory }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Request failed");
+    chatHistory.push({ role: "assistant", content: data.message });
+    localStorage.setItem(CHAT_KEY, JSON.stringify(chatHistory));
+    renderChat();
+  } catch (err) {
+    document.getElementById("chat-pending")?.remove();
+    thread.insertAdjacentHTML("beforeend",
+      `<div style="display:flex;justify-content:flex-start;"><div style="background:rgba(239,68,68,0.1);color:var(--red);padding:10px 14px;border-radius:12px;font-size:13px;">Error: ${escapeHtml(err.message)}</div></div>`);
+  }
+  btn.disabled = false; btn.textContent = "Send";
+  input.focus();
+}
+
+function clearChat() {
+  if (!chatHistory.length) return;
+  if (!confirm("Clear chat history?")) return;
+  chatHistory = [];
+  localStorage.removeItem(CHAT_KEY);
+  renderChat();
+}
+
 function fmt(n) { return "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
 
 // Init
 document.querySelectorAll(".window-btn").forEach(b => {
   b.addEventListener("click", () => setDashWindow(b.dataset.days));
 });
+renderChat();
 loadDashboard();
 loadAccounts();
 </script>

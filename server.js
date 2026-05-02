@@ -468,6 +468,93 @@ Respond ONLY in JSON: {"cut":"...","savings":"$X/month","sneaky":"...","positive
   }
 });
 
+function buildAdvisorContext(db) {
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const txns = db.transactions.filter(t => t.date >= cutoff);
+  const total = txns.reduce((s, t) => s + t.amount, 0);
+  const months = new Set(txns.map(t => t.date.slice(0, 7))).size || 1;
+
+  const catMap = {};
+  txns.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + t.amount; });
+  const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
+
+  const merchMap = {};
+  const merchCount = {};
+  txns.forEach(t => {
+    const m = t.merchant || t.description;
+    merchMap[m] = (merchMap[m] || 0) + t.amount;
+    merchCount[m] = (merchCount[m] || 0) + 1;
+  });
+  const merchants = Object.entries(merchMap).sort((a, b) => b[1] - a[1]).slice(0, 30);
+
+  const txnLines = txns.slice(0, 250).map(t =>
+    `${t.date} | ${(t.merchant || t.description).slice(0, 40).padEnd(40)} | $${t.amount.toFixed(2).padStart(8)} | ${t.category}`
+  ).join("\n");
+
+  return `You are a sharp, candid personal financial advisor with full read access to the user's last 90 days of spending. Ground every answer in their actual transactions — cite specific merchants, dates, and dollar amounts when relevant. Be concise unless they ask for depth. Never make up numbers; if the data doesn't show something, say so.
+
+SUMMARY
+Total: $${total.toFixed(0)} over ${months} month(s) ($${(total / months).toFixed(0)}/mo avg)
+
+CATEGORIES
+${cats.map(([c, v]) => `- ${c}: $${v.toFixed(0)}`).join("\n")}
+
+TOP MERCHANTS (by total spend)
+${merchants.map(([m, v]) => `- ${m}: $${v.toFixed(0)} (${merchCount[m]}x)`).join("\n")}
+
+TRANSACTIONS (date | merchant | amount | category)
+${txnLines}`;
+}
+
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!Array.isArray(messages) || !messages.length) {
+      return res.status(400).json({ error: "messages array required" });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: "ANTHROPIC_API_KEY is not set" });
+    }
+
+    const db = loadDB();
+    const systemPrompt = buildAdvisorContext(db);
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1024,
+        system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+        messages,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("Chat API error:", data);
+      return res.status(500).json({ error: data.error?.message || `HTTP ${response.status}` });
+    }
+    const text = data.content?.[0]?.text || "";
+    res.json({
+      message: text,
+      usage: {
+        input: data.usage?.input_tokens,
+        cache_read: data.usage?.cache_read_input_tokens,
+        cache_write: data.usage?.cache_creation_input_tokens,
+        output: data.usage?.output_tokens,
+      },
+    });
+  } catch (err) {
+    console.error("Chat error:", err);
+    res.status(500).json({ error: "Failed to generate response" });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Catch-all
 // ---------------------------------------------------------------------------
