@@ -74,7 +74,14 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
 .connect-card:hover { border-color: var(--accent); }
 
 /* Transaction table */
-.txn-header { display: grid; grid-template-columns: 85px 1fr 120px 100px 90px; padding: 10px 16px; font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.05em; }
+.txn-header { display: grid; grid-template-columns: 85px 1fr 120px 100px 90px; padding: 0; font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.05em; }
+.txn-sort-btn { background: transparent; border: none; color: var(--dim); font: inherit; text-transform: inherit; letter-spacing: inherit; padding: 12px 16px; cursor: pointer; text-align: left; transition: background 0.1s, color 0.1s; }
+.txn-sort-btn:hover { background: rgba(255,255,255,0.03); color: var(--text); }
+.txn-sort-btn.active { color: var(--accent); }
+.sort-arrow { display: inline-block; margin-left: 4px; opacity: 0.7; }
+.cat-chip { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 5px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+.cat-chip:hover { border-color: var(--accent); color: var(--accent); }
+.cat-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .txn-row { display: grid; grid-template-columns: 85px 1fr 120px 100px 90px; padding: 10px 16px; font-size: 13px; border-bottom: 1px solid rgba(42,52,68,0.3); align-items: center; }
 .txn-scroll { max-height: 500px; overflow-y: auto; }
 
@@ -157,10 +164,18 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
 
   <!-- TRANSACTIONS VIEW -->
   <div id="view-transactions" class="hidden">
-    <h2 style="font-size:22px;font-weight:600;margin-bottom:16px;">All transactions</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h2 style="font-size:22px;font-weight:600;">All transactions</h2>
+      <span id="txn-result-count" style="color:var(--muted);font-size:13px;"></span>
+    </div>
+    <div id="txn-cat-filter" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;"></div>
     <div class="card" style="padding:0;overflow:hidden;">
       <div class="txn-header">
-        <span>Date</span><span>Description</span><span>Category</span><span>Source</span><span style="text-align:right">Amount</span>
+        <button class="txn-sort-btn" data-sort="date">Date <span class="sort-arrow"></span></button>
+        <button class="txn-sort-btn" data-sort="description" style="text-align:left;">Description <span class="sort-arrow"></span></button>
+        <button class="txn-sort-btn" data-sort="category" style="text-align:left;">Category <span class="sort-arrow"></span></button>
+        <button class="txn-sort-btn" data-sort="source" style="text-align:left;">Source <span class="sort-arrow"></span></button>
+        <button class="txn-sort-btn" data-sort="amount" style="text-align:right;">Amount <span class="sort-arrow"></span></button>
       </div>
       <div class="txn-scroll" id="txn-list"></div>
     </div>
@@ -442,27 +457,81 @@ async function loadDashboard() {
 }
 
 // ---- Transactions ----
+let txnData = [];
+let txnSort = { key: "date", dir: "desc" };
+let txnCatFilter = "All";
+
 async function loadTransactions() {
   try {
     const days = dashWindow === "all" ? 100000 : Number(dashWindow);
     const resp = await fetch(`/api/transactions?days=${days}`);
-    const txns = await resp.json();
-    document.getElementById("txn-list").innerHTML = txns.map(t => {
-      const d = new Date(t.date);
-      const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      const catColor = CAT_COLORS[t.category] || "var(--dim)";
-      const srcColor = sourceColor(t.source);
-      return `
-        <div class="txn-row">
-          <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${t.description}</span>
-          <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
-          <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${t.source}</span>
-          <span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>
-        </div>
-      `;
-    }).join("");
+    txnData = await resp.json();
+    renderCatFilter();
+    renderTransactions();
   } catch (err) { console.error(err); }
+}
+
+function renderCatFilter() {
+  const cats = ["All", ...new Set(txnData.map(t => t.category || "Other"))].sort((a, b) => {
+    if (a === "All") return -1; if (b === "All") return 1;
+    return a.localeCompare(b);
+  });
+  document.getElementById("txn-cat-filter").innerHTML = cats.map(c => {
+    const active = c === txnCatFilter ? " active" : "";
+    return `<button class="cat-chip${active}" onclick="setCatFilter('${c.replace(/'/g, "\\'")}')">${c}</button>`;
+  }).join("");
+}
+
+function setCatFilter(cat) {
+  txnCatFilter = cat;
+  renderCatFilter();
+  renderTransactions();
+}
+
+function setTxnSort(key) {
+  if (txnSort.key === key) {
+    txnSort.dir = txnSort.dir === "asc" ? "desc" : "asc";
+  } else {
+    txnSort.key = key;
+    txnSort.dir = key === "amount" || key === "date" ? "desc" : "asc";
+  }
+  renderTransactions();
+}
+
+function renderTransactions() {
+  let rows = txnCatFilter === "All" ? txnData.slice() : txnData.filter(t => (t.category || "Other") === txnCatFilter);
+
+  const dir = txnSort.dir === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = a[txnSort.key] ?? "";
+    const bv = b[txnSort.key] ?? "";
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+    return String(av).localeCompare(String(bv)) * dir;
+  });
+
+  document.querySelectorAll(".txn-sort-btn").forEach(b => {
+    const isActive = b.dataset.sort === txnSort.key;
+    b.classList.toggle("active", isActive);
+    b.querySelector(".sort-arrow").textContent = isActive ? (txnSort.dir === "asc" ? "↑" : "↓") : "";
+  });
+
+  document.getElementById("txn-result-count").textContent = `${rows.length} of ${txnData.length} shown`;
+
+  document.getElementById("txn-list").innerHTML = rows.map(t => {
+    const d = new Date(t.date);
+    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const catColor = CAT_COLORS[t.category] || "var(--dim)";
+    const srcColor = sourceColor(t.source);
+    return `
+      <div class="txn-row">
+        <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${t.description}</span>
+        <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
+        <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${t.source}</span>
+        <span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>
+      </div>
+    `;
+  }).join("");
 }
 
 // ---- AI Insights ----
@@ -588,6 +657,9 @@ function fmt(n) { return "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))
 // Init
 document.querySelectorAll(".window-btn").forEach(b => {
   b.addEventListener("click", () => setDashWindow(b.dataset.days));
+});
+document.querySelectorAll(".txn-sort-btn").forEach(b => {
+  b.addEventListener("click", () => setTxnSort(b.dataset.sort));
 });
 renderChat();
 loadDashboard();
