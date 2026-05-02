@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } = require("plaid");
+const { Configuration, PlaidApi, PlaidEnvironments, Products } = require("plaid");
 
 const app = express();
 app.use(cors());
@@ -62,6 +62,11 @@ const plaidConfig = new Configuration({
 });
 const plaid = new PlaidApi(plaidConfig);
 
+const PLAID_COUNTRY_CODES = (process.env.PLAID_COUNTRY_CODES || "US")
+  .split(",")
+  .map(c => c.trim().toUpperCase())
+  .filter(Boolean);
+
 // ---------------------------------------------------------------------------
 // Routes: Plaid Link
 // ---------------------------------------------------------------------------
@@ -72,7 +77,7 @@ app.post("/api/plaid/create-link-token", async (req, res) => {
       user: { client_user_id: "budgetpilot-user-1" },
       client_name: "BudgetPilot",
       products: [Products.Transactions],
-      country_codes: [CountryCode.Us],
+      country_codes: PLAID_COUNTRY_CODES,
       language: "en",
     });
     res.json({ link_token: response.data.link_token });

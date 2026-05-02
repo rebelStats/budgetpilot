@@ -1,6 +1,6 @@
 # BudgetPilot
 
-Personal financial advisor that connects your Capital One and Revolut accounts via Plaid, categorizes every transaction automatically, and gives you AI-powered budget advice via Claude.
+Personal financial advisor that connects your bank accounts via Plaid, categorizes every transaction automatically, and gives you AI-powered budget advice via Claude.
 
 ## Architecture
 
@@ -50,9 +50,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 1. Click **Connect** in the nav
 2. Click the connect card — Plaid Link opens
-3. Search for "Capital One" or "Revolut" and log in
+3. Search for your bank and log in
 4. Click **Sync transactions** to pull the last 90 days
 5. Go to **Dashboard** to see your spending breakdown
+
+By default the institution picker shows US banks only. To connect banks in other countries, set `PLAID_COUNTRY_CODES` in `.env` to a comma-separated list of ISO codes — e.g. `US,GB,IE,FR`. Plaid currently supports: US, CA, GB, IE, FR, ES, NL, DE, IT, PL, DK, NO, SE, EE, LT, LV, PT, BE.
 
 ## Plaid environments
 
@@ -70,19 +72,13 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## Features
 
-- **Multi-bank dashboard**: Capital One + Revolut in one view
+- **Multi-bank dashboard**: all your connected accounts in one view
 - **Auto-categorization**: Transactions sorted into 14 spending categories
 - **Weekly trend chart**: Visual spending spikes with over-budget flags
 - **Recurring merchant tracking**: Identifies habits by frequency + total spend
 - **AI advisor**: Claude analyzes your patterns and gives specific budget advice
 - **Local storage**: JSON file — your financial data never leaves your machine
 - **Transaction browser**: Searchable list across all connected accounts
-
-## Revolut note
-
-Plaid's Revolut integration availability depends on your region:
-- **EU/UK Revolut accounts**: supported via Plaid's open banking connections
-- **If Plaid can't connect**: export a CSV from Revolut (app → Analytics → Statements) and you can extend the app with the CSV parser from the earlier version
 
 ## Tech stack
 
