@@ -64,6 +64,9 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
 .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
 .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
 .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+.window-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+.window-btn:hover { border-color: var(--accent); color: var(--accent); }
+.window-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-danger { background: transparent; border: 1px solid rgba(239,68,68,0.3); color: var(--red); font-size: 12px; padding: 6px 14px; }
 
 /* Connect card */
@@ -127,6 +130,13 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
     </div>
 
     <div id="dash-content" class="hidden">
+      <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:16px;">
+        <button class="window-btn" data-days="30">30d</button>
+        <button class="window-btn" data-days="90">90d</button>
+        <button class="window-btn" data-days="180">180d</button>
+        <button class="window-btn" data-days="365">1y</button>
+        <button class="window-btn" data-days="all">All</button>
+      </div>
       <div class="grid-4" id="stat-cards"></div>
       <div class="grid-2">
         <div class="card">
@@ -201,7 +211,8 @@ const CAT_COLORS = {
   "Flights & Travel": "#ec4899", "Medical & Pharmacy": "#ef4444", "Shopping & Online": "#8b5cf6",
   "Subscriptions & Digital": "#14b8a6", "Home & Furniture": "#f97316", "Entertainment": "#a855f7",
   "Clothing & Fashion": "#06b6d4", "Utilities & Bills": "#64748b", "Transfers & Payments": "#3b82f6",
-  "Coffee & Snacks": "#d97706", "Other": "#6b7280"
+  "Coffee & Snacks": "#d97706", "Personal Care": "#db2777",
+  "Taxes & Government": "#475569", "Other": "#6b7280"
 };
 
 const SRC_PALETTE = ["var(--accent)", "var(--teal)", "var(--green)", "var(--amber)"];
@@ -214,6 +225,7 @@ function sourceColor(source) {
 
 let weekChart = null;
 let currentView = "dashboard";
+let dashWindow = "90"; // "30" | "90" | "180" | "365" | "all"
 
 // ---- Navigation ----
 function showView(id) {
@@ -319,18 +331,26 @@ async function removeAccount(id, name) {
 }
 
 // ---- Dashboard ----
+function setDashWindow(days) {
+  dashWindow = days;
+  document.querySelectorAll(".window-btn").forEach(b => b.classList.toggle("active", b.dataset.days === days));
+  loadDashboard();
+}
+
 async function loadDashboard() {
   try {
-    const resp = await fetch("/api/summary?days=90");
+    const days = dashWindow === "all" ? 100000 : Number(dashWindow);
+    const resp = await fetch(`/api/summary?days=${days}`);
     const data = await resp.json();
+    document.querySelectorAll(".window-btn").forEach(b => b.classList.toggle("active", b.dataset.days === dashWindow));
     if (!data.count) { document.getElementById("dash-empty").classList.remove("hidden"); document.getElementById("dash-content").classList.add("hidden"); return; }
     document.getElementById("dash-empty").classList.add("hidden");
     document.getElementById("dash-content").classList.remove("hidden");
     document.getElementById("txn-count").textContent = data.count + " transactions loaded";
 
-    const months = Math.max(1, data.byWeek.length / 4.3);
+    const windowLabel = dashWindow === "all" ? "All time" : `Last ${dashWindow} days`;
     document.getElementById("stat-cards").innerHTML = `
-      <div class="card stat-card"><div class="stat-label">Total spent</div><div class="stat-value mono">${fmt(data.total)}</div><div class="stat-sub">Last 90 days</div></div>
+      <div class="card stat-card"><div class="stat-label">Total spent</div><div class="stat-value mono">${fmt(data.total)}</div><div class="stat-sub">${windowLabel}</div></div>
       <div class="card stat-card"><div class="stat-label">Monthly avg</div><div class="stat-value mono" style="color:var(--accent-l)">${fmt(data.monthlyAvg)}</div></div>
       <div class="card stat-card"><div class="stat-label">Transactions</div><div class="stat-value mono">${data.count}</div></div>
       <div class="card stat-card"><div class="stat-label">Top category</div><div class="stat-value" style="font-size:18px;color:var(--amber)">${data.byCategory[0]?.category || '—'}</div><div class="stat-sub">${data.byCategory[0] ? fmt(data.byCategory[0].total) : ''}</div></div>
@@ -387,7 +407,8 @@ async function loadDashboard() {
 // ---- Transactions ----
 async function loadTransactions() {
   try {
-    const resp = await fetch("/api/transactions?days=90");
+    const days = dashWindow === "all" ? 100000 : Number(dashWindow);
+    const resp = await fetch(`/api/transactions?days=${days}`);
     const txns = await resp.json();
     document.getElementById("txn-list").innerHTML = txns.map(t => {
       const d = new Date(t.date);
@@ -456,6 +477,9 @@ async function getInsights() {
 function fmt(n) { return "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
 
 // Init
+document.querySelectorAll(".window-btn").forEach(b => {
+  b.addEventListener("click", () => setDashWindow(b.dataset.days));
+});
 loadDashboard();
 loadAccounts();
 </script>

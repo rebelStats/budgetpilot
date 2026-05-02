@@ -33,18 +33,20 @@ function mapCategory(plaidCategories, merchantName) {
   const cats = (plaidCategories || []).join(" ").toLowerCase();
   const m = (merchantName || "").toLowerCase();
 
-  if (/groceries|supermarket/i.test(cats) || /spar|lidl|carrefour|frisco|zabka/i.test(m)) return "Groceries";
-  if (/restaurant|dining|food and drink|cafe|coffee/i.test(cats)) return "Dining & Restaurants";
-  if (/taxi|ride share|uber|lyft|bolt|transportation/i.test(cats) || /uber|bolt\.eu|taxi/i.test(m)) return "Transport & Rides";
-  if (/airlines|travel|hotel|lodging/i.test(cats) || /wizz air|getyourguide/i.test(m)) return "Flights & Travel";
-  if (/pharmacy|health|medical|doctor|dentist/i.test(cats) || /taban medical|patika|apteka|medis/i.test(m)) return "Medical & Pharmacy";
-  if (/shops|shopping|online|amazon|ebay/i.test(cats) || /amazon|ebay|allegro|ikea/i.test(m)) return "Shopping & Online";
-  if (/subscription|digital|streaming|software/i.test(cats) || /apple\.com|google \*|imdbpro|audible|netflix|spotify/i.test(m)) return "Subscriptions & Digital";
+  if (/government|tax authority/i.test(cats) || /e-pit|skarbowy|urząd|us skarbowy/i.test(m)) return "Taxes & Government";
+  if (/groceries|supermarket/i.test(cats) || /spar|lidl|carrefour|frisco|zabka|biedronka|tesco|piekarnia|crazy butcher/i.test(m)) return "Groceries";
+  if (/restaurant|dining|food and drink|cafe|coffee/i.test(cats) || /wolt|bolt food|kantin|kantyna|étterem|restauracja|kawiarnia|ramen|pizza|burger|sushi|wafu|frici|monokini|tarka macska/i.test(m)) return "Dining & Restaurants";
+  if (/taxi|ride share|uber|lyft|bolt|transportation/i.test(cats) || /uber|bolt\.eu|taxi|budapestgo|simplep\*budapestgo/i.test(m)) return "Transport & Rides";
+  if (/airlines|travel|hotel|lodging/i.test(cats) || /wizz|getyourguide|booking\.com|airbnb|ryanair|lot polish/i.test(m)) return "Flights & Travel";
+  if (/pharmacy|health|medical|doctor|dentist/i.test(cats) || /taban medical|patika|apteka|medis|aurismed|lafit/i.test(m)) return "Medical & Pharmacy";
+  if (/shops|shopping|online|amazon|ebay/i.test(cats) || /amazon|ebay|allegro|ikea|g2a\.com|moka united|shopinext/i.test(m)) return "Shopping & Online";
+  if (/subscription|digital|streaming|software/i.test(cats) || /apple\.com|google \*|google one|imdbpro|audible|netflix|spotify|claude\.ai|openai|chatgpt|github|anthropic/i.test(m)) return "Subscriptions & Digital";
   if (/home|furniture|hardware/i.test(cats)) return "Home & Furniture";
-  if (/entertainment|recreation|gaming/i.test(cats)) return "Entertainment";
+  if (/entertainment|recreation|gaming/i.test(cats) || /getcracked|exponent member/i.test(m)) return "Entertainment";
   if (/clothing|apparel/i.test(cats) || /new yorker|reserved|dior|rossmann/i.test(m)) return "Clothing & Fashion";
-  if (/utilities|telecom|phone|internet|bills/i.test(cats)) return "Utilities & Bills";
-  if (/transfer|payment|bank/i.test(cats)) return "Transfers & Payments";
+  if (/personal care|beauty|barber|salon/i.test(cats) || /barber|salon|fryzjer/i.test(m)) return "Personal Care";
+  if (/utilities|telecom|phone|internet|bills/i.test(cats) || /telekom|orange|t-mobile|play|plus gsm/i.test(m)) return "Utilities & Bills";
+  if (/transfer|payment|bank/i.test(cats) || /blue media|simplep\*vimpay/i.test(m)) return "Transfers & Payments";
   return "Other";
 }
 
@@ -128,9 +130,15 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
     db.accounts.forEach(a => tokenSet.set(a.access_token, a.institution_name));
 
     let totalAdded = 0;
-    const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const endDate = new Date().toISOString().slice(0, 10);
     const existingIds = new Set(db.transactions.map(t => t.id));
+
+    // Re-categorize existing transactions so a categorizer fix is reflected
+    // without forcing the user to wipe their data.
+    db.transactions.forEach(t => {
+      t.category = mapCategory([], t.merchant || t.description);
+    });
 
     for (const [access_token, institution_name] of tokenSet) {
       let offset = 0;
@@ -154,7 +162,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
             date: t.date,
             description: t.name || t.merchant_name || "Unknown",
             amount: t.amount,
-            category: mapCategory(t.category, t.merchant_name),
+            category: mapCategory(t.category, t.merchant_name || t.name),
             merchant: t.merchant_name || t.name || "",
             source: institution_name,
             currency: t.iso_currency_code || "USD",
@@ -243,12 +251,16 @@ app.get("/api/summary", (req, res) => {
   });
 
   const weekMap = {};
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   txns.forEach(t => {
     const d = new Date(t.date);
-    const jan1 = new Date(d.getFullYear(), 0, 1);
-    const week = Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7);
-    const key = `${d.getFullYear()}-${String(week).padStart(2, "0")}`;
-    weekMap[key] = (weekMap[key] || 0) + t.amount;
+    const dayOfWeek = (d.getDay() + 6) % 7; // 0 = Monday
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - dayOfWeek);
+    const sortKey = monday.toISOString().slice(0, 10);
+    const label = `${MONTHS[monday.getMonth()]} ${monday.getDate()}`;
+    if (!weekMap[sortKey]) weekMap[sortKey] = { label, total: 0 };
+    weekMap[sortKey].total += t.amount;
   });
 
   const srcMap = {};
@@ -274,7 +286,7 @@ app.get("/api/summary", (req, res) => {
     count: txns.length,
     monthlyAvg: months.size > 0 ? total / months.size : 0,
     byCategory: Object.values(catMap).sort((a, b) => b.total - a.total),
-    byWeek: Object.entries(weekMap).sort((a, b) => a[0].localeCompare(b[0])).map(([week, total]) => ({ week, total })),
+    byWeek: Object.entries(weekMap).sort((a, b) => a[0].localeCompare(b[0])).map(([_, v]) => ({ week: v.label, total: v.total })),
     bySource: Object.values(srcMap).sort((a, b) => b.total - a.total),
     topMerchants: Object.values(merchMap).filter(m => m.count >= 2).sort((a, b) => b.total - a.total).slice(0, 15),
   });
@@ -344,6 +356,22 @@ Respond ONLY in JSON: {"cut":"...","savings":"$X/month","sneaky":"...","positive
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
+
+// Re-categorize stored transactions on startup so categorizer changes
+// take effect without requiring a re-sync.
+(function recategorizeOnStartup() {
+  const db = loadDB();
+  if (!db.transactions.length) return;
+  let changed = 0;
+  db.transactions.forEach(t => {
+    const fresh = mapCategory([], t.merchant || t.description);
+    if (fresh !== t.category) { t.category = fresh; changed++; }
+  });
+  if (changed) {
+    saveDB(db);
+    console.log(`  Recategorized ${changed} transactions`);
+  }
+})();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
