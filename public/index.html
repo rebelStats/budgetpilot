@@ -194,9 +194,14 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
     <div style="margin-top:24px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <span style="font-size:14px;color:var(--muted);">Connected accounts</span>
-        <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="syncTransactions()">
-          ↻ Sync transactions
-        </button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="recategorize()">
+            ✦ Smart categorize
+          </button>
+          <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="syncTransactions()">
+            ↻ Sync transactions
+          </button>
+        </div>
       </div>
       <div id="account-list"><p style="color:var(--dim);font-size:13px;">No accounts connected yet</p></div>
     </div>
@@ -311,6 +316,24 @@ async function loadAccounts() {
       </div>
     `).join("");
   } catch {}
+}
+
+async function recategorize() {
+  document.getElementById("sync-status").innerHTML =
+    '<div style="padding:12px;color:var(--muted);font-size:14px;">Classifying merchants with AI…</div>';
+  try {
+    const resp = await fetch("/api/recategorize", { method: "POST" });
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    document.getElementById("sync-status").innerHTML =
+      `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
+        Classified ${data.aiClassified} new merchants via AI · ${data.stillOther} still uncategorized
+      </div>`;
+    if (currentView === "dashboard") loadDashboard();
+  } catch (err) {
+    document.getElementById("sync-status").innerHTML =
+      '<div style="padding:12px;color:var(--red);font-size:14px;">Recategorization failed.</div>';
+  }
 }
 
 async function removeAccount(id, name) {

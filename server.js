@@ -17,9 +17,13 @@ const DB_PATH = path.join(__dirname, "budgetpilot-data.json");
 
 function loadDB() {
   try {
-    if (fs.existsSync(DB_PATH)) return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+    if (fs.existsSync(DB_PATH)) {
+      const data = JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+      if (!data.merchantCache) data.merchantCache = {};
+      return data;
+    }
   } catch { }
-  return { accounts: [], transactions: [] };
+  return { accounts: [], transactions: [], merchantCache: {} };
 }
 
 function saveDB(data) {
@@ -27,8 +31,103 @@ function saveDB(data) {
 }
 
 // ---------------------------------------------------------------------------
-// Category mapping from Plaid categories
+// Category mapping: regex fast path → AI classifier (cached) → "Other"
 // ---------------------------------------------------------------------------
+const CATEGORIES = [
+  "Taxes & Government", "Groceries", "Dining & Restaurants", "Transport & Rides",
+  "Flights & Travel", "Medical & Pharmacy", "Shopping & Online", "Subscriptions & Digital",
+  "Home & Furniture", "Entertainment", "Clothing & Fashion", "Personal Care",
+  "Utilities & Bills", "Transfers & Payments", "Other"
+];
+
+function categorize(plaidCategories, merchantName, cache) {
+  const regex = mapCategory(plaidCategories, merchantName);
+  if (regex !== "Other") return regex;
+  const cached = cache?.[merchantName];
+  if (cached && CATEGORIES.includes(cached)) return cached;
+  return "Other";
+}
+
+function isClassifiableMerchant(m) {
+  if (!m) return false;
+  // Skip garbled/redacted merchant names like "*****" or "***.****"
+  if (/^[*\s_.\-]+$/.test(m)) return false;
+  return true;
+}
+
+async function classifyMerchantsWithAI(merchants) {
+  if (!merchants.length || !process.env.ANTHROPIC_API_KEY) return {};
+
+  const prompt = `Classify each merchant name into ONE of these spending categories:
+${CATEGORIES.join(", ")}
+
+Return ONLY a JSON object mapping merchant → category. Use "Other" only when no category fits. Do not invent new categories.
+
+Merchants:
+${JSON.stringify(merchants)}`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 4000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || `HTTP ${response.status}`);
+  }
+  const text = data.content?.[0]?.text || "";
+  const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+
+  const valid = {};
+  for (const [m, cat] of Object.entries(parsed)) {
+    valid[m] = CATEGORIES.includes(cat) ? cat : "Other";
+  }
+  return valid;
+}
+
+async function classifyUnknownMerchants(db) {
+  const unknown = new Set();
+  db.transactions.forEach(t => {
+    if (t.category !== "Other") return;
+    const m = t.merchant || t.description;
+    if (!isClassifiableMerchant(m)) return;
+    if (db.merchantCache[m]) return;
+    unknown.add(m);
+  });
+
+  if (!unknown.size) return { classified: 0 };
+
+  const merchants = [...unknown];
+  let classified = 0;
+  for (let i = 0; i < merchants.length; i += 50) {
+    const batch = merchants.slice(i, i + 50);
+    try {
+      const results = await classifyMerchantsWithAI(batch);
+      Object.assign(db.merchantCache, results);
+      classified += Object.keys(results).length;
+    } catch (err) {
+      console.error("AI classification batch failed:", err.message);
+    }
+  }
+
+  db.transactions.forEach(t => {
+    if (t.category !== "Other") return;
+    const m = t.merchant || t.description;
+    if (db.merchantCache[m]) t.category = db.merchantCache[m];
+  });
+
+  return { classified };
+}
+
 function mapCategory(plaidCategories, merchantName) {
   const cats = (plaidCategories || []).join(" ").toLowerCase();
   const m = (merchantName || "").toLowerCase();
@@ -137,7 +236,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
     // Re-categorize existing transactions so a categorizer fix is reflected
     // without forcing the user to wipe their data.
     db.transactions.forEach(t => {
-      t.category = mapCategory([], t.merchant || t.description);
+      t.category = categorize([], t.merchant || t.description, db.merchantCache);
     });
 
     for (const [access_token, institution_name] of tokenSet) {
@@ -162,7 +261,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
             date: t.date,
             description: t.name || t.merchant_name || "Unknown",
             amount: t.amount,
-            category: mapCategory(t.category, t.merchant_name || t.name),
+            category: categorize(t.category, t.merchant_name || t.name, db.merchantCache),
             merchant: t.merchant_name || t.name || "",
             source: institution_name,
             currency: t.iso_currency_code || "USD",
@@ -177,8 +276,11 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
     }
 
     db.transactions.sort((a, b) => b.date.localeCompare(a.date));
+
+    const aiResult = await classifyUnknownMerchants(db);
+
     saveDB(db);
-    res.json({ added: totalAdded, total: db.transactions.length });
+    res.json({ added: totalAdded, total: db.transactions.length, aiClassified: aiResult.classified });
   } catch (err) {
     console.error("Sync error:", err.response?.data || err.message);
     res.status(500).json({ error: "Failed to sync transactions" });
@@ -192,6 +294,22 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
 app.get("/api/accounts", (req, res) => {
   const db = loadDB();
   res.json(db.accounts.map(({ access_token, ...rest }) => rest));
+});
+
+app.post("/api/recategorize", async (req, res) => {
+  try {
+    const db = loadDB();
+    db.transactions.forEach(t => {
+      t.category = categorize([], t.merchant || t.description, db.merchantCache);
+    });
+    const aiResult = await classifyUnknownMerchants(db);
+    saveDB(db);
+    const stillOther = db.transactions.filter(t => t.category === "Other").length;
+    res.json({ total: db.transactions.length, aiClassified: aiResult.classified, stillOther });
+  } catch (err) {
+    console.error("Recategorize error:", err.message);
+    res.status(500).json({ error: "Failed to recategorize" });
+  }
 });
 
 app.delete("/api/accounts/:id", async (req, res) => {
@@ -364,7 +482,7 @@ app.get("*", (req, res) => {
   if (!db.transactions.length) return;
   let changed = 0;
   db.transactions.forEach(t => {
-    const fresh = mapCategory([], t.merchant || t.description);
+    const fresh = categorize([], t.merchant || t.description, db.merchantCache);
     if (fresh !== t.category) { t.category = fresh; changed++; }
   });
   if (changed) {
