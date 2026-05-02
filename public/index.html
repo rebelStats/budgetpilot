@@ -164,9 +164,11 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
 
   <!-- TRANSACTIONS VIEW -->
   <div id="view-transactions" class="hidden">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;">
       <h2 style="font-size:22px;font-weight:600;">All transactions</h2>
-      <span id="txn-result-count" style="color:var(--muted);font-size:13px;"></span>
+      <input id="txn-search" type="text" placeholder="Search merchant, description, or category…" oninput="setTxnSearch(this.value)"
+             style="flex:1;max-width:380px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:13px;font-family:inherit;outline:none;">
+      <span id="txn-result-count" style="color:var(--muted);font-size:13px;white-space:nowrap;"></span>
     </div>
     <div id="txn-cat-filter" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;"></div>
     <div class="card" style="padding:0;overflow:hidden;">
@@ -460,6 +462,12 @@ async function loadDashboard() {
 let txnData = [];
 let txnSort = { key: "date", dir: "desc" };
 let txnCatFilter = "All";
+let txnSearch = "";
+
+function setTxnSearch(v) {
+  txnSearch = v.trim().toLowerCase();
+  renderTransactions();
+}
 
 async function loadTransactions() {
   try {
@@ -500,6 +508,14 @@ function setTxnSort(key) {
 
 function renderTransactions() {
   let rows = txnCatFilter === "All" ? txnData.slice() : txnData.filter(t => (t.category || "Other") === txnCatFilter);
+  if (txnSearch) {
+    rows = rows.filter(t =>
+      (t.description || "").toLowerCase().includes(txnSearch) ||
+      (t.merchant || "").toLowerCase().includes(txnSearch) ||
+      (t.category || "").toLowerCase().includes(txnSearch) ||
+      (t.source || "").toLowerCase().includes(txnSearch)
+    );
+  }
 
   const dir = txnSort.dir === "asc" ? 1 : -1;
   rows.sort((a, b) => {
