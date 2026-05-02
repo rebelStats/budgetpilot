@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BudgetPilot</title>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0f1a; --surface: #111827; --card: #1a2233; --border: #2a3444;
+  --accent: #6366f1; --accent-l: #818cf8; --green: #10b981; --red: #ef4444;
+  --amber: #f59e0b; --teal: #14b8a6; --text: #f1f5f9; --muted: #94a3b8; --dim: #64748b;
+}
+body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple-system, sans-serif; }
+.mono { font-family: 'JetBrains Mono', monospace; }
+
+/* Header */
+.header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+.logo { display: flex; align-items: center; gap: 12px; }
+.logo-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--teal)); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; }
+.logo-text { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+.logo-sub { font-size: 11px; color: var(--dim); }
+.nav { display: flex; gap: 4px; }
+.nav-btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; background: transparent; color: var(--muted); font-family: inherit; transition: all 0.2s; }
+.nav-btn.active { background: rgba(99,102,241,0.15); color: var(--accent-l); }
+.nav-btn:hover { color: var(--text); }
+
+/* Layout */
+.main { max-width: 960px; margin: 0 auto; padding: 24px; }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+@media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* Cards */
+.card { background: var(--card); border-radius: 12px; padding: 20px; border: 1px solid var(--border); }
+.stat-card { padding: 16px 20px; }
+.stat-label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+.stat-value { font-size: 26px; font-weight: 600; }
+.stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.card-title { font-size: 14px; font-weight: 600; margin-bottom: 16px; }
+
+/* Bars */
+.bar-track { width: 100%; height: 6px; border-radius: 3px; background: var(--border); }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
+.bar-row { margin-bottom: 12px; }
+.bar-header { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.bar-label { color: var(--muted); }
+
+/* Merchant rows */
+.merchant-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.merchant-name { flex: 0 0 200px; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merchant-bar { flex: 1; }
+.merchant-amount { flex: 0 0 80px; text-align: right; font-size: 12px; }
+
+/* Badge */
+.badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+
+/* Buttons */
+.btn { padding: 12px 28px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; transition: all 0.2s; }
+.btn-primary { background: linear-gradient(135deg, var(--accent), var(--teal)); color: #fff; }
+.btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+.btn-danger { background: transparent; border: 1px solid rgba(239,68,68,0.3); color: var(--red); font-size: 12px; padding: 6px 14px; }
+
+/* Connect card */
+.connect-card { border: 2px dashed var(--border); border-radius: 16px; padding: 48px 24px; text-align: center; background: var(--card); cursor: pointer; transition: border-color 0.2s; }
+.connect-card:hover { border-color: var(--accent); }
+
+/* Transaction table */
+.txn-header { display: grid; grid-template-columns: 85px 1fr 120px 100px 90px; padding: 10px 16px; font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.05em; }
+.txn-row { display: grid; grid-template-columns: 85px 1fr 120px 100px 90px; padding: 10px 16px; font-size: 13px; border-bottom: 1px solid rgba(42,52,68,0.3); align-items: center; }
+.txn-scroll { max-height: 500px; overflow-y: auto; }
+
+/* Insights cards */
+.insight-card { border-top: 3px solid var(--accent); }
+.insight-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+.insight-text { font-size: 14px; line-height: 1.6; color: var(--muted); }
+
+/* Account pill */
+.account-pill { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--card); border-radius: 8px; margin-bottom: 6px; border: 1px solid var(--border); }
+
+/* Empty state */
+.empty { text-align: center; padding: 80px 20px; }
+.empty-icon { font-size: 48px; margin-bottom: 16px; }
+
+/* Loading spinner */
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Week plan */
+.week-item { padding: 10px 14px; background: var(--surface); border-radius: 8px; margin-bottom: 6px; font-size: 13px; color: var(--muted); border-left: 3px solid var(--accent); }
+
+.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">₿</div>
+    <div>
+      <div class="logo-text">BudgetPilot</div>
+      <div class="logo-sub" id="txn-count">No data loaded</div>
+    </div>
+  </div>
+  <div class="nav">
+    <button class="nav-btn active" onclick="showView('dashboard')">◉ Dashboard</button>
+    <button class="nav-btn" onclick="showView('transactions')">≡ Transactions</button>
+    <button class="nav-btn" onclick="showView('insights')">✦ AI Advisor</button>
+    <button class="nav-btn" onclick="showView('connect')">⊕ Connect</button>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- DASHBOARD VIEW -->
+  <div id="view-dashboard">
+    <div id="dash-empty" class="empty">
+      <div class="empty-icon">◉</div>
+      <h2 style="font-size:20px;font-weight:600;margin-bottom:8px;">Connect your bank to get started</h2>
+      <p style="color:var(--muted);margin-bottom:24px;">Link your Capital One and Revolut accounts via Plaid</p>
+      <button class="btn btn-primary" onclick="showView('connect')">Connect bank account</button>
+    </div>
+
+    <div id="dash-content" class="hidden">
+      <div class="grid-4" id="stat-cards"></div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Spending by category</div>
+          <div id="cat-bars"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Weekly trend</div>
+          <div style="position:relative;height:200px;"><canvas id="weekChart"></canvas></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Top recurring merchants</div>
+        <div id="merchant-rows"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRANSACTIONS VIEW -->
+  <div id="view-transactions" class="hidden">
+    <h2 style="font-size:22px;font-weight:600;margin-bottom:16px;">All transactions</h2>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="txn-header">
+        <span>Date</span><span>Description</span><span>Category</span><span>Source</span><span style="text-align:right">Amount</span>
+      </div>
+      <div class="txn-scroll" id="txn-list"></div>
+    </div>
+  </div>
+
+  <!-- AI INSIGHTS VIEW -->
+  <div id="view-insights" class="hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+      <div>
+        <h2 style="font-size:22px;font-weight:600;margin-bottom:4px;">AI financial advisor</h2>
+        <p style="color:var(--muted);font-size:14px;">Personalized insights powered by Claude</p>
+      </div>
+      <button class="btn btn-primary" onclick="getInsights()" id="btn-insights">✦ Get advice</button>
+    </div>
+    <div id="insights-content"></div>
+  </div>
+
+  <!-- CONNECT VIEW -->
+  <div id="view-connect" class="hidden">
+    <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;">Connect accounts</h2>
+    <p style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">
+      Link your bank accounts through Plaid. Your credentials go directly to Plaid — BudgetPilot never sees your login info.
+    </p>
+
+    <div class="connect-card" onclick="openPlaidLink()">
+      <div style="font-size:40px;margin-bottom:12px;">⊕</div>
+      <div style="font-size:16px;font-weight:500;margin-bottom:8px;">Connect a bank account</div>
+      <div style="font-size:13px;color:var(--dim);">Capital One, Revolut, and 12,000+ other institutions</div>
+    </div>
+
+    <div style="margin-top:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="font-size:14px;color:var(--muted);">Connected accounts</span>
+        <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="syncTransactions()">
+          ↻ Sync transactions
+        </button>
+      </div>
+      <div id="account-list"><p style="color:var(--dim);font-size:13px;">No accounts connected yet</p></div>
+    </div>
+    <div id="sync-status" style="margin-top:12px;"></div>
+  </div>
+
+</div>
+
+<script>
+const CAT_COLORS = {
+  "Groceries": "#10b981", "Dining & Restaurants": "#f59e0b", "Transport & Rides": "#6366f1",
+  "Flights & Travel": "#ec4899", "Medical & Pharmacy": "#ef4444", "Shopping & Online": "#8b5cf6",
+  "Subscriptions & Digital": "#14b8a6", "Home & Furniture": "#f97316", "Entertainment": "#a855f7",
+  "Clothing & Fashion": "#06b6d4", "Utilities & Bills": "#64748b", "Transfers & Payments": "#3b82f6",
+  "Coffee & Snacks": "#d97706", "Other": "#6b7280"
+};
+
+let weekChart = null;
+let currentView = "dashboard";
+
+// ---- Navigation ----
+function showView(id) {
+  currentView = id;
+  document.querySelectorAll('[id^="view-"]').forEach(el => el.classList.add("hidden"));
+  document.getElementById("view-" + id).classList.remove("hidden");
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
+  event?.target?.classList?.add("active") || document.querySelector(`.nav-btn[onclick*="${id}"]`)?.classList.add("active");
+
+  if (id === "dashboard") loadDashboard();
+  if (id === "transactions") loadTransactions();
+  if (id === "connect") loadAccounts();
+}
+
+// ---- Plaid Link ----
+async function openPlaidLink() {
+  try {
+    const resp = await fetch("/api/plaid/create-link-token", { method: "POST" });
+    const { link_token, error } = await resp.json();
+    if (error) { alert("Error: " + error); return; }
+
+    const handler = Plaid.create({
+      token: link_token,
+      onSuccess: async (public_token, metadata) => {
+        const exResp = await fetch("/api/plaid/exchange-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ public_token, institution: metadata.institution }),
+        });
+        const result = await exResp.json();
+        if (result.accounts) {
+          document.getElementById("sync-status").innerHTML =
+            `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
+              Connected ${result.accounts.length} account(s). Syncing transactions...
+            </div>`;
+          await syncTransactions();
+          loadAccounts();
+        }
+      },
+      onExit: (err) => { if (err) console.error("Plaid exit:", err); },
+    });
+    handler.open();
+  } catch (err) {
+    console.error(err);
+    alert("Could not open Plaid Link. Make sure the server is running and PLAID keys are configured.");
+  }
+}
+
+// ---- Sync ----
+async function syncTransactions() {
+  document.getElementById("sync-status").innerHTML =
+    '<div style="padding:12px;color:var(--accent);font-size:14px;"><span class="spinner"></span> Syncing transactions...</div>';
+  try {
+    const resp = await fetch("/api/plaid/sync-transactions", { method: "POST" });
+    const data = await resp.json();
+    document.getElementById("sync-status").innerHTML =
+      `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
+        Synced ${data.added} transactions (${data.total} total)
+      </div>`;
+    document.getElementById("txn-count").textContent = data.total + " transactions loaded";
+  } catch (err) {
+    document.getElementById("sync-status").innerHTML =
+      '<div style="padding:12px;color:var(--red);font-size:14px;">Sync failed. Check server logs.</div>';
+  }
+}
+
+// ---- Load accounts ----
+async function loadAccounts() {
+  try {
+    const resp = await fetch("/api/accounts");
+    const accounts = await resp.json();
+    const el = document.getElementById("account-list");
+    if (!accounts.length) { el.innerHTML = '<p style="color:var(--dim);font-size:13px;">No accounts connected yet</p>'; return; }
+    el.innerHTML = accounts.map(a => `
+      <div class="account-pill">
+        <div>
+          <span style="font-weight:500;">${a.institution_name}</span>
+          <span style="color:var(--muted);font-size:13px;margin-left:8px;">${a.account_name} (${a.account_type})</span>
+        </div>
+      </div>
+    `).join("");
+  } catch {}
+}
+
+// ---- Dashboard ----
+async function loadDashboard() {
+  try {
+    const resp = await fetch("/api/summary?days=90");
+    const data = await resp.json();
+    if (!data.count) { document.getElementById("dash-empty").classList.remove("hidden"); document.getElementById("dash-content").classList.add("hidden"); return; }
+    document.getElementById("dash-empty").classList.add("hidden");
+    document.getElementById("dash-content").classList.remove("hidden");
+    document.getElementById("txn-count").textContent = data.count + " transactions loaded";
+
+    const months = Math.max(1, data.byWeek.length / 4.3);
+    document.getElementById("stat-cards").innerHTML = `
+      <div class="card stat-card"><div class="stat-label">Total spent</div><div class="stat-value mono">${fmt(data.total)}</div><div class="stat-sub">Last 90 days</div></div>
+      <div class="card stat-card"><div class="stat-label">Monthly avg</div><div class="stat-value mono" style="color:var(--accent-l)">${fmt(data.monthlyAvg)}</div></div>
+      <div class="card stat-card"><div class="stat-label">Transactions</div><div class="stat-value mono">${data.count}</div></div>
+      <div class="card stat-card"><div class="stat-label">Top category</div><div class="stat-value" style="font-size:18px;color:var(--amber)">${data.byCategory[0]?.category || '—'}</div><div class="stat-sub">${data.byCategory[0] ? fmt(data.byCategory[0].total) : ''}</div></div>
+    `;
+
+    const maxCat = data.byCategory[0]?.total || 1;
+    document.getElementById("cat-bars").innerHTML = data.byCategory.slice(0, 8).map(c => `
+      <div class="bar-row">
+        <div class="bar-header"><span class="bar-label">${c.category}</span><span class="mono" style="font-size:12px">${fmt(c.total)}</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(c.total/maxCat*100).toFixed(1)}%;background:${CAT_COLORS[c.category]||'var(--accent)'}"></div></div>
+      </div>
+    `).join("");
+
+    const maxMerchant = data.topMerchants[0]?.total || 1;
+    document.getElementById("merchant-rows").innerHTML = data.topMerchants.map(m => {
+      const freqColor = m.count >= 10 ? 'var(--red)' : m.count >= 5 ? 'var(--amber)' : 'var(--dim)';
+      return `
+        <div class="merchant-row">
+          <div class="merchant-name">${m.merchant}</div>
+          <div class="merchant-bar"><div class="bar-track"><div class="bar-fill" style="width:${(m.total/maxMerchant*100).toFixed(1)}%;background:var(--teal)"></div></div></div>
+          <div class="merchant-amount mono">${fmt(m.total)}</div>
+          <span class="badge" style="background:${freqColor}22;color:${freqColor};border:1px solid ${freqColor}44">${m.count}x</span>
+        </div>
+      `;
+    }).join("");
+
+    // Weekly chart
+    if (weekChart) weekChart.destroy();
+    const weekLabels = data.byWeek.map(w => w.week);
+    const weekData = data.byWeek.map(w => w.total);
+    const weekThreshold = data.monthlyAvg * 0.3;
+    weekChart = new Chart(document.getElementById("weekChart"), {
+      type: "bar",
+      data: {
+        labels: weekLabels,
+        datasets: [{
+          data: weekData,
+          backgroundColor: weekData.map(v => v > weekThreshold ? "rgba(239,68,68,0.6)" : "rgba(99,102,241,0.5)"),
+          borderRadius: 4, borderSkipped: false
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => " " + fmt(ctx.raw) } } },
+        scales: {
+          x: { ticks: { color: "#64748b", font: { size: 10 } }, grid: { color: "rgba(255,255,255,0.04)" } },
+          y: { ticks: { color: "#64748b", font: { size: 10 }, callback: v => "$" + v }, grid: { color: "rgba(255,255,255,0.04)" } }
+        }
+      }
+    });
+  } catch (err) { console.error("Dashboard error:", err); }
+}
+
+// ---- Transactions ----
+async function loadTransactions() {
+  try {
+    const resp = await fetch("/api/transactions?days=90");
+    const txns = await resp.json();
+    document.getElementById("txn-list").innerHTML = txns.map(t => {
+      const d = new Date(t.date);
+      const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      const catColor = CAT_COLORS[t.category] || "var(--dim)";
+      const srcColor = t.source?.toLowerCase().includes("revolut") ? "var(--teal)" : "var(--accent)";
+      return `
+        <div class="txn-row">
+          <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${t.description}</span>
+          <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
+          <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${t.source}</span>
+          <span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>
+        </div>
+      `;
+    }).join("");
+  } catch (err) { console.error(err); }
+}
+
+// ---- AI Insights ----
+async function getInsights() {
+  const btn = document.getElementById("btn-insights");
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+  try {
+    const resp = await fetch("/api/insights", { method: "POST" });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    const cards = [
+      { label: "Cut this first", icon: "✂", text: data.cut + (data.savings ? ` (save ${data.savings})` : ""), color: "var(--red)" },
+      { label: "Sneaky expense", icon: "👀", text: data.sneaky, color: "var(--amber)" },
+      { label: "Keep doing this", icon: "✓", text: data.positive, color: "var(--green)" },
+      { label: "Budget target", icon: "◎", text: data.budget, color: "var(--accent)" },
+    ];
+
+    let html = '<div class="grid-2">' + cards.map(c => `
+      <div class="card insight-card" style="border-top-color:${c.color}">
+        <div class="insight-label" style="color:${c.color}">${c.icon} ${c.label}</div>
+        <div class="insight-text">${c.text}</div>
+      </div>
+    `).join("") + "</div>";
+
+    if (data.monthlyTarget) {
+      html += `
+        <div class="card" style="text-align:center;margin-top:16px;">
+          <div class="stat-label">Recommended monthly budget</div>
+          <div class="mono" style="font-size:36px;font-weight:700;color:var(--green);margin:8px 0;">${fmt(data.monthlyTarget)}</div>
+        </div>
+      `;
+    }
+
+    if (data.weekPlan?.length) {
+      html += '<div class="card" style="margin-top:16px;"><div class="card-title">4-week action plan</div>';
+      html += data.weekPlan.map(w => `<div class="week-item">${w}</div>`).join("");
+      html += "</div>";
+    }
+
+    document.getElementById("insights-content").innerHTML = html;
+  } catch (err) {
+    document.getElementById("insights-content").innerHTML =
+      `<div style="color:var(--red);padding:20px;">Failed to generate insights. Make sure ANTHROPIC_API_KEY is set in .env</div>`;
+  }
+  btn.disabled = false; btn.innerHTML = "✦ Get advice";
+}
+
+function fmt(n) { return "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+
+// Init
+loadDashboard();
+loadAccounts();
+</script>
+</body>
+</html>
