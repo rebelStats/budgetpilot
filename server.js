@@ -186,6 +186,35 @@ app.get("/api/accounts", (req, res) => {
   res.json(db.accounts.map(({ access_token, ...rest }) => rest));
 });
 
+app.delete("/api/accounts/:id", async (req, res) => {
+  try {
+    const db = loadDB();
+    const target = db.accounts.find(a => a.id === req.params.id);
+    if (!target) return res.status(404).json({ error: "Account not found" });
+
+    const removedTxns = db.transactions.filter(t => t.account_id === target.id).length;
+    db.transactions = db.transactions.filter(t => t.account_id !== target.id);
+    db.accounts = db.accounts.filter(a => a.id !== target.id);
+
+    const stillUsed = db.accounts.some(a => a.access_token === target.access_token);
+    let itemRevoked = false;
+    if (!stillUsed) {
+      try {
+        await plaid.itemRemove({ access_token: target.access_token });
+        itemRevoked = true;
+      } catch (err) {
+        console.error("Plaid itemRemove failed (continuing anyway):", err.response?.data || err.message);
+      }
+    }
+
+    saveDB(db);
+    res.json({ removed: target.id, removedTxns, itemRevoked });
+  } catch (err) {
+    console.error("Delete account error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Failed to remove account" });
+  }
+});
+
 app.get("/api/transactions", (req, res) => {
   const { days = 90, category, source } = req.query;
   const db = loadDB();
