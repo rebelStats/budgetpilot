@@ -151,17 +151,17 @@ function mapCategory(plaidCategories, merchantName) {
   if (/^transfer (to|from)\s/i.test(m)) return "Transfers & Payments";
   if (/government|tax authority/i.test(cats) || /e-pit|skarbowy|urząd|us skarbowy/i.test(m)) return "Taxes & Government";
   if (/groceries|supermarket/i.test(cats) || /spar|lidl|carrefour|frisco|zabka|biedronka|tesco|piekarnia|crazy butcher/i.test(m)) return "Groceries";
-  if (/restaurant|dining|food and drink|cafe|coffee/i.test(cats) || /wolt|bolt food|kantin|kantyna|étterem|restauracja|kawiarnia|ramen|pizza|burger|sushi|wafu|frici|monokini|tarka macska/i.test(m)) return "Dining & Restaurants";
-  if (/taxi|ride share|uber|lyft|bolt|transportation/i.test(cats) || /uber|bolt\.eu|taxi|budapestgo|simplep\*budapestgo/i.test(m)) return "Transport & Rides";
+  if (/restaurant|dining|food and drink|cafe|coffee/i.test(cats) || /wolt|bolt food|kantin|kantyna|étterem|restauracja|kawiarnia|ramen|pizza|burger|sushi|wafu|frici|monokini|tarka macska|byc moze|być może|modszertani kabinet/i.test(m)) return "Dining & Restaurants";
+  if (/taxi|ride share|uber|lyft|bolt|transportation/i.test(cats) || /uber|bolt\.eu|taxi|budapestgo|simplep\*budapestgo|simplep\*vimpay|\bvimpay\b/i.test(m)) return "Transport & Rides";
   if (/airlines|travel|hotel|lodging/i.test(cats) || /wizz|getyourguide|booking\.com|airbnb|ryanair|lot polish/i.test(m)) return "Flights & Travel";
   if (/pharmacy|health|medical|doctor|dentist/i.test(cats) || /taban medical|patika|apteka|medis|aurismed|lafit/i.test(m)) return "Medical & Pharmacy";
-  if (/shops|shopping|online|amazon|ebay/i.test(cats) || /amazon|ebay|allegro|ikea|g2a\.com|moka united|shopinext/i.test(m)) return "Shopping & Online";
+  if (/shops|shopping|online|amazon|ebay/i.test(cats) || /amazon|ebay|allegro|ikea|g2a\.com|moka united|shopinext|\*+\.\*+/i.test(m)) return "Shopping & Online";
   if (/subscription|digital|streaming|software/i.test(cats) || /apple\.com|google \*|google one|imdbpro|audible|netflix|spotify|claude\.ai|openai|chatgpt|github|anthropic|metal plan fee|premium plan fee|standard plan fee|revolut plan/i.test(m)) return "Subscriptions & Digital";
   if (/home|furniture|hardware/i.test(cats)) return "Home & Furniture";
   if (/entertainment|recreation|gaming/i.test(cats) || /getcracked|exponent member/i.test(m)) return "Entertainment";
-  if (/clothing|apparel/i.test(cats) || /new yorker|reserved|dior|rossmann/i.test(m)) return "Clothing & Fashion";
+  if (/clothing|apparel/i.test(cats) || /new yorker|reserved|dior|rossmann|intimi/i.test(m)) return "Clothing & Fashion";
   if (/personal care|beauty|barber|salon/i.test(cats) || /barber|salon|fryzjer/i.test(m)) return "Personal Care";
-  if (/utilities|telecom|phone|internet|bills/i.test(cats) || /telekom|orange|t-mobile|play|plus gsm/i.test(m)) return "Utilities & Bills";
+  if (/utilities|telecom|phone|internet|bills/i.test(cats) || /telekom|orange|t-mobile|play|plus gsm|^fi\s|google fi|\bblue media\b/i.test(m)) return "Utilities & Bills";
   if (/transfer|payment|bank/i.test(cats)) return "Transfers & Payments";
   return "Other";
 }
