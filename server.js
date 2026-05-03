@@ -319,7 +319,7 @@ app.get("/api/accounts", (req, res) => {
 
 app.patch("/api/transactions/:id", (req, res) => {
   try {
-    const { description } = req.body;
+    const { description, applyToAll } = req.body;
     if (typeof description !== "string") {
       return res.status(400).json({ error: "description string required" });
     }
@@ -330,9 +330,18 @@ app.patch("/api/transactions/:id", (req, res) => {
     const t = db.transactions.find(x => x.id === req.params.id);
     if (!t) return res.status(404).json({ error: "transaction not found" });
 
-    t.description = trimmed;
+    let updated = 0;
+    if (applyToAll) {
+      const oldDesc = t.description;
+      db.transactions.forEach(x => {
+        if (x.description === oldDesc) { x.description = trimmed; updated++; }
+      });
+    } else {
+      t.description = trimmed;
+      updated = 1;
+    }
     saveDB(db);
-    res.json({ id: t.id, description: t.description });
+    res.json({ id: t.id, description: trimmed, updated });
   } catch (err) {
     console.error("Description edit error:", err);
     res.status(500).json({ error: "Failed to update description" });

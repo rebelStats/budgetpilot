@@ -760,15 +760,27 @@ function openDescriptionEditor(span) {
       renderTransactions();
       return;
     }
+
+    const matchCount = txnData.filter(x => x.description === original).length;
+    let applyToAll = false;
+    if (matchCount > 1) {
+      applyToAll = confirm(`There are ${matchCount} transactions with description "${original}". Rename all of them to "${newValue}"?\n\nOK = rename all ${matchCount}\nCancel = rename just this one`);
+    }
+
     try {
       const resp = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: newValue }),
+        body: JSON.stringify({ description: newValue, applyToAll }),
       });
       if (!resp.ok) throw new Error(await resp.text());
-      const t = txnData.find(x => x.id === id);
-      if (t) t.description = newValue;
+      const data = await resp.json();
+      if (applyToAll) {
+        txnData.forEach(x => { if (x.description === original) x.description = newValue; });
+      } else {
+        const t = txnData.find(x => x.id === id);
+        if (t) t.description = newValue;
+      }
     } catch (err) {
       console.error("Rename failed:", err);
     }
