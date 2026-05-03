@@ -718,7 +718,9 @@ function renderTransactions() {
     return `
       <div class="txn-row">
         <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${t.description}</span>
+        <span class="desc-edit" data-id="${t.id}" data-desc="${escapeHtml(t.description || '')}"
+              style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px;cursor:text;"
+              title="Click to rename">${escapeHtml(t.description)}</span>
         <button class="badge cat-edit" data-merchant="${merchantAttr}" data-current="${t.category||'Other'}"
                 style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44;cursor:pointer;font:inherit;padding:2px 8px;"
                 title="Click to change category${overridden ? ' (currently overridden)' : ''}">
@@ -733,6 +735,51 @@ function renderTransactions() {
   document.querySelectorAll(".cat-edit").forEach(b => {
     b.addEventListener("click", e => openCategoryPicker(e.currentTarget));
   });
+  document.querySelectorAll(".desc-edit").forEach(s => {
+    s.addEventListener("click", e => openDescriptionEditor(e.currentTarget));
+  });
+}
+
+function openDescriptionEditor(span) {
+  const id = span.dataset.id;
+  const original = span.dataset.desc;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = original;
+  input.style.cssText = "background:var(--surface);border:1px solid var(--accent);color:var(--text);padding:4px 8px;border-radius:6px;font-size:13px;font-family:inherit;outline:none;width:100%;";
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let resolved = false;
+  const finish = async (save) => {
+    if (resolved) return;
+    resolved = true;
+    const newValue = input.value.trim();
+    if (!save || !newValue || newValue === original) {
+      renderTransactions();
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: newValue }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const t = txnData.find(x => x.id === id);
+      if (t) t.description = newValue;
+    } catch (err) {
+      console.error("Rename failed:", err);
+    }
+    renderTransactions();
+  };
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
 }
 
 // ---- AI Insights ----

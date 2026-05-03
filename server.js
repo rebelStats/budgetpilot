@@ -317,6 +317,28 @@ app.get("/api/accounts", (req, res) => {
   res.json(db.accounts.map(({ access_token, ...rest }) => rest));
 });
 
+app.patch("/api/transactions/:id", (req, res) => {
+  try {
+    const { description } = req.body;
+    if (typeof description !== "string") {
+      return res.status(400).json({ error: "description string required" });
+    }
+    const trimmed = description.trim().slice(0, 200);
+    if (!trimmed) return res.status(400).json({ error: "description cannot be empty" });
+
+    const db = loadDB();
+    const t = db.transactions.find(x => x.id === req.params.id);
+    if (!t) return res.status(404).json({ error: "transaction not found" });
+
+    t.description = trimmed;
+    saveDB(db);
+    res.json({ id: t.id, description: t.description });
+  } catch (err) {
+    console.error("Description edit error:", err);
+    res.status(500).json({ error: "Failed to update description" });
+  }
+});
+
 app.get("/api/categories", (req, res) => {
   const db = loadDB();
   res.json({ categories: CATEGORIES, overrides: db.merchantOverrides });
