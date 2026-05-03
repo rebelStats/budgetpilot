@@ -740,9 +740,11 @@ function renderTransactions() {
     const srcColor = sourceColor(t.source);
     const overridden = !!txnOverrides[t.merchant];
     const dot = overridden ? '<span title="Manually overridden" style="opacity:0.7;margin-right:3px;">●</span>' : '';
+    const amountColor = t.amount < 0 ? "var(--green)" : "var(--red)";
+    const amountStr = t.amount < 0 ? `+${fmt(Math.abs(t.amount))}` : fmt(t.amount);
     const amountHtml = (t.currency_original && t.currency_original !== "USD")
-      ? `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${t.amount_original?.toFixed(2)} ${t.currency_original}</span></span>`
-      : `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>`;
+      ? `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${t.amount_original?.toFixed(2)} ${t.currency_original}</span></span>`
+      : `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}</span>`;
     const merchantAttr = (t.merchant || '').replace(/"/g, "&quot;");
     return `
       <div class="txn-row">
@@ -934,9 +936,13 @@ function renderImportPreview() {
     const catColor = CAT_COLORS[t.category] || "var(--dim)";
     const usd = t.amount_usd ?? t.amount;
     const showsConversion = t.currency_original && t.currency_original !== "USD";
+    const amountColor = usd < 0 ? "var(--green)" : "var(--red)";
+    const amountStr = usd < 0 ? `+${fmt(Math.abs(usd))}` : fmt(usd);
+    const origAmt = (t.amount_original ?? t.amount);
+    const origStr = origAmt < 0 ? `+${Math.abs(origAmt).toFixed(2)} ${t.currency_original}` : `${origAmt.toFixed(2)} ${t.currency_original}`;
     const amountHtml = showsConversion
-      ? `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(usd)}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${(t.amount_original ?? t.amount).toFixed(2)} ${t.currency_original}</span></span>`
-      : `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(usd)}</span>`;
+      ? `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${origStr}</span></span>`
+      : `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}</span>`;
     return `
       <div class="txn-row">
         <span class="mono" style="font-size:11px;color:var(--dim)">${t.date}</span>

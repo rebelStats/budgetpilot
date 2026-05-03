@@ -244,6 +244,19 @@ app.post("/api/plaid/exchange-token", async (req, res) => {
   }
 });
 
+// Plaid's category data identifies non-spend items we should skip even when
+// they appear as credits on the account (salary, transfers in, etc.).
+function isPlaidIncomeOrTransferIn(t) {
+  const cats = (t.category || []).join(" ").toLowerCase();
+  if (/payroll|salary|interest earned|deposit|reimbursement|tax refund/i.test(cats)) {
+    // Tax refunds are conceptually income, not spending refunds — treat as income.
+    return /payroll|salary|interest earned|deposit|tax refund/i.test(cats);
+  }
+  const pfc = t.personal_finance_category?.primary;
+  if (pfc === "INCOME" || pfc === "TRANSFER_IN") return true;
+  return false;
+}
+
 app.post("/api/plaid/sync-transactions", async (req, res) => {
   try {
     const db = loadDB();
@@ -254,6 +267,10 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
     const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const endDate = new Date().toISOString().slice(0, 10);
     const existingIds = new Set(db.transactions.map(t => t.id));
+
+    // INTENTIONAL: we only ADD new transactions here, never delete existing ones.
+    // Plaid's API rolls forward (typically ~90 days for many institutions); when a
+    // transaction falls out of Plaid's window our local copy is preserved.
 
     // Re-categorize existing transactions so a categorizer fix is reflected
     // without forcing the user to wipe their data.
@@ -274,7 +291,11 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
         });
 
         for (const t of txnResp.data.transactions) {
-          if (t.amount <= 0) continue;
+          // Skip non-spending income (salary, deposits, interest, transfers in).
+          // Refunds remain — Plaid sends them as negative amounts and we want
+          // them stored so they reduce the spend total in their merchant's category.
+          if (isPlaidIncomeOrTransferIn(t)) continue;
+          if (t.amount === 0) continue;
           if (existingIds.has(t.transaction_id)) continue;
 
           db.transactions.push({
@@ -806,27 +827,34 @@ async function extractTransactionsFromFile({ filename, mimeType, base64data }) {
   const isPdf = (mimeType && mimeType.includes("pdf")) || /\.pdf$/i.test(filename || "");
   const isCsv = /\.csv$/i.test(filename || "") || mimeType === "text/csv" || mimeType === "text/plain";
 
-  const instructions = `Extract every MONEY-OUT transaction from this financial statement (money leaving the account).
+  const instructions = `Extract every spending-relevant transaction from this financial statement.
 
-INCLUDE:
+INCLUDE as POSITIVE amounts (money the user spent):
 - Card purchases
 - ATM cash withdrawals (e.g. "Cash withdrawal at ...")
 - Outgoing currency exchanges (e.g. "Exchanged to HUF") — keep the source-currency amount
 - Outgoing transfers to people (e.g. "Transfer to JOHN SMITH")
 - Subscription/plan fees, account fees
 
-SKIP:
-- Money-in / incoming items: top-ups, deposits, salary, refunds, returns, incoming transfers ("Transfer from ...", "Top-up by ...")
-- Any line in the "Money in" column with no "Money out" amount
+INCLUDE as NEGATIVE amounts (money returned to the user from a previous purchase):
+- Refunds, returns, reversals, chargebacks (e.g. "Refund from SPAR")
+- Use the merchant of the original purchase
+
+SKIP entirely (true income, not refunds):
+- Salary, payroll, wages
+- Bank deposits, top-ups, account funding (e.g. "Top-up by *6365")
+- Incoming person-to-person transfers (e.g. "Transfer from JOHN SMITH")
+- Interest earned, dividends, cashback rewards
+- Tax refunds from a government
 
 Return ONLY a JSON array (no prose, no markdown fences) of objects with these fields:
 - date: YYYY-MM-DD
-- description: full original transaction description, INCLUDING the "Transfer to <NAME>" or "Exchanged to <CCY>" prefix verbatim if present
-- amount: positive number, in the SOURCE currency shown in the "Money out" column (do not convert)
-- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST"). For transfers use the recipient name. For exchanges use "Exchange". For cash withdrawals use the ATM/location name.
+- description: full original transaction description, INCLUDING any "Transfer to <NAME>", "Exchanged to <CCY>", or "Refund from <NAME>" prefix verbatim
+- amount: number in the SOURCE currency. POSITIVE for spending, NEGATIVE for refunds. Do not convert.
+- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST"). For transfers use the recipient name. For exchanges use "Exchange". For cash withdrawals use the ATM/location name. For refunds use the original merchant.
 - currency: 3-letter ISO code of the source amount (e.g. "PLN", "EUR", "HUF", "USD")
 
-Return [] if no money-out transactions are found.`;
+Return [] if no spending-relevant transactions are found.`;
 
   let content;
   if (isPdf) {
@@ -864,7 +892,7 @@ Return [] if no money-out transactions are found.`;
   if (!Array.isArray(parsed)) throw new Error("Model did not return a JSON array");
 
   return parsed
-    .filter(t => t && t.date && t.amount > 0 && (t.description || t.merchant))
+    .filter(t => t && t.date && Number.isFinite(Number(t.amount)) && Number(t.amount) !== 0 && (t.description || t.merchant))
     .map(t => ({
       date: String(t.date).slice(0, 10),
       description: String(t.description || t.merchant || "").slice(0, 200),
