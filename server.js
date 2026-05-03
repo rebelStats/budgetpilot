@@ -3,11 +3,12 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { Configuration, PlaidApi, PlaidEnvironments, Products } = require("plaid");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---------------------------------------------------------------------------
@@ -552,6 +553,143 @@ app.post("/api/chat", async (req, res) => {
   } catch (err) {
     console.error("Chat error:", err);
     res.status(500).json({ error: "Failed to generate response" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Routes: CSV / PDF import
+// ---------------------------------------------------------------------------
+async function extractTransactionsFromFile({ filename, mimeType, base64data }) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error("ANTHROPIC_API_KEY is not set");
+  }
+
+  const isPdf = (mimeType && mimeType.includes("pdf")) || /\.pdf$/i.test(filename || "");
+  const isCsv = /\.csv$/i.test(filename || "") || mimeType === "text/csv" || mimeType === "text/plain";
+
+  const instructions = `Extract every spending transaction from this financial statement.
+
+Return ONLY a JSON array (no prose, no markdown fences) of objects with these exact fields:
+- date: YYYY-MM-DD
+- description: full original line text (cleaned of obvious garbage)
+- amount: positive number representing money the user SPENT (debit/charge). SKIP refunds, deposits, transfers in, salary, and any credit/positive-balance line.
+- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST 12-04")
+- currency: 3-letter ISO code (default "USD" if unclear)
+
+Return [] if no spending transactions are found.`;
+
+  let content;
+  if (isPdf) {
+    content = [
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64data } },
+      { type: "text", text: instructions },
+    ];
+  } else if (isCsv) {
+    const text = Buffer.from(base64data, "base64").toString("utf8").slice(0, 200_000);
+    content = [{ type: "text", text: `${instructions}\n\nCSV CONTENT:\n${text}` }];
+  } else {
+    throw new Error(`Unsupported file type: ${mimeType || filename}`);
+  }
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 8192,
+      messages: [{ role: "user", content }],
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || `HTTP ${response.status}`);
+  }
+  const text = data.content?.[0]?.text || "[]";
+  const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+  if (!Array.isArray(parsed)) throw new Error("Model did not return a JSON array");
+
+  return parsed
+    .filter(t => t && t.date && t.amount > 0 && (t.description || t.merchant))
+    .map(t => ({
+      date: String(t.date).slice(0, 10),
+      description: String(t.description || t.merchant || "").slice(0, 200),
+      amount: Number(t.amount),
+      merchant: String(t.merchant || t.description || "").slice(0, 100),
+      currency: (t.currency || "USD").toUpperCase().slice(0, 3),
+    }));
+}
+
+function importTxnId(t, sourceLabel) {
+  const h = crypto.createHash("sha1");
+  h.update(`${sourceLabel}|${t.date}|${t.description}|${t.amount.toFixed(2)}`);
+  return "imp_" + h.digest("hex").slice(0, 24);
+}
+
+app.post("/api/import/parse", async (req, res) => {
+  try {
+    const { filename, mimeType, base64data } = req.body;
+    if (!base64data) return res.status(400).json({ error: "base64data is required" });
+
+    const extracted = await extractTransactionsFromFile({ filename, mimeType, base64data });
+
+    const db = loadDB();
+    extracted.forEach(t => {
+      t.category = categorize([], t.merchant || t.description, db.merchantCache);
+    });
+
+    res.json({ transactions: extracted });
+  } catch (err) {
+    console.error("Import parse error:", err);
+    res.status(500).json({ error: err.message || "Failed to parse file" });
+  }
+});
+
+app.post("/api/import/save", async (req, res) => {
+  try {
+    const { transactions, source } = req.body;
+    if (!Array.isArray(transactions) || !transactions.length) {
+      return res.status(400).json({ error: "transactions array is required" });
+    }
+    const sourceLabel = (source || "Imported").slice(0, 50);
+
+    const db = loadDB();
+    const existing = new Set(db.transactions.map(t => t.id));
+
+    let added = 0;
+    let skipped = 0;
+    for (const t of transactions) {
+      const id = importTxnId(t, sourceLabel);
+      if (existing.has(id)) { skipped++; continue; }
+      db.transactions.push({
+        id,
+        account_id: `import:${sourceLabel}`,
+        date: t.date,
+        description: t.description,
+        amount: Number(t.amount),
+        category: t.category || categorize([], t.merchant || t.description, db.merchantCache),
+        merchant: t.merchant || t.description || "",
+        source: sourceLabel,
+        currency: t.currency || "USD",
+      });
+      existing.add(id);
+      added++;
+    }
+
+    if (added > 0) {
+      const aiResult = await classifyUnknownMerchants(db);
+      db.transactions.sort((a, b) => b.date.localeCompare(a.date));
+      saveDB(db);
+      return res.json({ added, skipped, aiClassified: aiResult.classified, total: db.transactions.length });
+    }
+    res.json({ added, skipped, total: db.transactions.length });
+  } catch (err) {
+    console.error("Import save error:", err);
+    res.status(500).json({ error: "Failed to save imported transactions" });
   }
 });
 

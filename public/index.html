@@ -121,6 +121,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
     <button class="nav-btn active" onclick="showView('dashboard')">◉ Dashboard</button>
     <button class="nav-btn" onclick="showView('transactions')">≡ Transactions</button>
     <button class="nav-btn" onclick="showView('insights')">✦ AI Advisor</button>
+    <button class="nav-btn" onclick="showView('import')">↥ Import</button>
     <button class="nav-btn" onclick="showView('connect')">⊕ Connect</button>
   </div>
 </div>
@@ -207,6 +208,30 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
         <button class="btn btn-primary" onclick="sendChat()" id="chat-send">Send</button>
       </div>
     </div>
+  </div>
+
+  <!-- IMPORT VIEW -->
+  <div id="view-import" class="hidden">
+    <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;">Import transactions</h2>
+    <p style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">
+      Upload a CSV or PDF statement. Claude Haiku reads the file, extracts transactions, and runs them through the same categorizer as your synced accounts.
+    </p>
+
+    <div class="connect-card" id="import-drop" onclick="document.getElementById('import-file').click()">
+      <div style="font-size:40px;margin-bottom:12px;">↥</div>
+      <div style="font-size:16px;font-weight:500;margin-bottom:8px;">Choose a CSV or PDF file</div>
+      <div style="font-size:13px;color:var(--dim);">Bank statement, credit card export, expense report — anything with transactions</div>
+      <input id="import-file" type="file" accept=".csv,.pdf,text/csv,application/pdf" style="display:none;" onchange="handleImportFile(this.files[0])">
+    </div>
+
+    <div style="margin-top:16px;display:flex;gap:8px;align-items:center;">
+      <label style="font-size:13px;color:var(--muted);">Source label:</label>
+      <input id="import-source" type="text" placeholder="e.g. Revolut PL, Chase Sapphire" value="Imported"
+             style="flex:1;max-width:280px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;font-family:inherit;outline:none;">
+    </div>
+
+    <div id="import-status" style="margin-top:16px;"></div>
+    <div id="import-preview" style="margin-top:16px;"></div>
   </div>
 
   <!-- CONNECT VIEW -->
@@ -594,6 +619,114 @@ async function getInsights() {
       `<div style="color:var(--red);padding:20px;">Failed to generate insights. Make sure ANTHROPIC_API_KEY is set in .env</div>`;
   }
   btn.disabled = false; btn.innerHTML = "✦ Get advice";
+}
+
+// ---- Import ----
+let importParsed = [];
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      const comma = result.indexOf(",");
+      resolve(result.slice(comma + 1));
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleImportFile(file) {
+  if (!file) return;
+  const status = document.getElementById("import-status");
+  const preview = document.getElementById("import-preview");
+  preview.innerHTML = "";
+  status.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:14px;"><span class="spinner"></span> Reading "${escapeHtml(file.name)}" with Haiku…</div>`;
+
+  try {
+    const base64data = await readFileAsBase64(file);
+    const resp = await fetch("/api/import/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, mimeType: file.type, base64data }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Parse failed");
+
+    importParsed = data.transactions || [];
+    if (!importParsed.length) {
+      status.innerHTML = `<div style="padding:12px;color:var(--amber);font-size:14px;">No spending transactions found in this file.</div>`;
+      return;
+    }
+
+    const totalAmt = importParsed.reduce((s, t) => s + Number(t.amount), 0);
+    status.innerHTML = `<div style="padding:12px 16px;border-radius:8px;background:rgba(99,102,241,0.12);color:var(--accent-l);font-size:14px;">
+      Found ${importParsed.length} transactions totaling ${fmt(totalAmt)}. Review below and click Import to save.
+    </div>`;
+
+    renderImportPreview();
+  } catch (err) {
+    status.innerHTML = `<div style="padding:12px;color:var(--red);font-size:14px;">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderImportPreview() {
+  const preview = document.getElementById("import-preview");
+  const rows = importParsed.map(t => {
+    const catColor = CAT_COLORS[t.category] || "var(--dim)";
+    return `
+      <div class="txn-row">
+        <span class="mono" style="font-size:11px;color:var(--dim)">${t.date}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${escapeHtml(t.description)}</span>
+        <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
+        <span style="color:var(--dim);font-size:12px;">${escapeHtml(t.merchant || '')}</span>
+        <span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>
+      </div>
+    `;
+  }).join("");
+
+  preview.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+      <button class="btn btn-primary" onclick="saveImport()" id="import-save-btn">Import ${importParsed.length} transactions</button>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="txn-header">
+        <span style="padding:12px 16px;">Date</span>
+        <span style="padding:12px 16px;">Description</span>
+        <span style="padding:12px 16px;">Category</span>
+        <span style="padding:12px 16px;">Merchant</span>
+        <span style="padding:12px 16px;text-align:right;">Amount</span>
+      </div>
+      <div class="txn-scroll">${rows}</div>
+    </div>
+  `;
+}
+
+async function saveImport() {
+  if (!importParsed.length) return;
+  const btn = document.getElementById("import-save-btn");
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Saving…';
+  try {
+    const source = document.getElementById("import-source").value.trim() || "Imported";
+    const resp = await fetch("/api/import/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transactions: importParsed, source }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Save failed");
+
+    document.getElementById("import-status").innerHTML = `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
+      Imported ${data.added} transactions${data.skipped ? ` · ${data.skipped} duplicates skipped` : ''}${data.aiClassified ? ` · ${data.aiClassified} AI-classified` : ''}
+    </div>`;
+    importParsed = [];
+    document.getElementById("import-preview").innerHTML = "";
+    document.getElementById("import-file").value = "";
+  } catch (err) {
+    document.getElementById("import-status").innerHTML = `<div style="padding:12px;color:var(--red);font-size:14px;">${escapeHtml(err.message)}</div>`;
+    btn.disabled = false; btn.innerHTML = "Import";
+  }
 }
 
 // ---- Chat ----
