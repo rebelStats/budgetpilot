@@ -21,10 +21,11 @@ function loadDB() {
     if (fs.existsSync(DB_PATH)) {
       const data = JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
       if (!data.merchantCache) data.merchantCache = {};
+      if (!data.merchantOverrides) data.merchantOverrides = {};
       return data;
     }
   } catch { }
-  return { accounts: [], transactions: [], merchantCache: {} };
+  return { accounts: [], transactions: [], merchantCache: {}, merchantOverrides: {} };
 }
 
 function saveDB(data) {
@@ -45,7 +46,10 @@ const CATEGORIES = [
 // Currency Exchange is fully excluded from spend totals.
 const EXCLUDED_FROM_SPEND = new Set(["Currency Exchange"]);
 
-function categorize(plaidCategories, merchantName, cache, description) {
+function categorize(plaidCategories, merchantName, cache, description, overrides) {
+  // Manual user override always wins.
+  const override = overrides?.[merchantName];
+  if (override && CATEGORIES.includes(override)) return override;
   // Run regex against description+merchant combined — patterns like
   // "Transfer to <PERSON>" only match the full description, not the cleaned merchant.
   const searchText = description ? `${description} ${merchantName || ""}`.trim() : (merchantName || "");
@@ -253,7 +257,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
     // Re-categorize existing transactions so a categorizer fix is reflected
     // without forcing the user to wipe their data.
     db.transactions.forEach(t => {
-      t.category = categorize([], t.merchant, db.merchantCache, t.description);
+      t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
     });
 
     for (const [access_token, institution_name] of tokenSet) {
@@ -278,7 +282,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
             date: t.date,
             description: t.name || t.merchant_name || "Unknown",
             amount: t.amount,
-            category: categorize(t.category, t.merchant_name, db.merchantCache, t.name),
+            category: categorize(t.category, t.merchant_name, db.merchantCache, t.name, db.merchantOverrides),
             merchant: t.merchant_name || t.name || "",
             source: institution_name,
             currency: t.iso_currency_code || "USD",
@@ -313,6 +317,49 @@ app.get("/api/accounts", (req, res) => {
   res.json(db.accounts.map(({ access_token, ...rest }) => rest));
 });
 
+app.get("/api/categories", (req, res) => {
+  const db = loadDB();
+  res.json({ categories: CATEGORIES, overrides: db.merchantOverrides });
+});
+
+app.post("/api/overrides", (req, res) => {
+  try {
+    const { merchant, category } = req.body;
+    if (!merchant || typeof merchant !== "string") {
+      return res.status(400).json({ error: "merchant required" });
+    }
+
+    const db = loadDB();
+    let updated = 0;
+
+    if (!category || category === "Auto" || category === null) {
+      // Clear the override and let categorize() fall back to regex/cache.
+      delete db.merchantOverrides[merchant];
+      db.transactions.forEach(t => {
+        if (t.merchant !== merchant) return;
+        const fresh = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
+        if (fresh !== t.category) { t.category = fresh; updated++; }
+      });
+      saveDB(db);
+      return res.json({ cleared: true, merchant, updated });
+    }
+
+    if (!CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: `Unknown category: ${category}` });
+    }
+    db.merchantOverrides[merchant] = category;
+    db.transactions.forEach(t => {
+      if (t.merchant !== merchant) return;
+      if (t.category !== category) { t.category = category; updated++; }
+    });
+    saveDB(db);
+    res.json({ merchant, category, updated });
+  } catch (err) {
+    console.error("Override error:", err);
+    res.status(500).json({ error: "Failed to update override" });
+  }
+});
+
 app.post("/api/recategorize", async (req, res) => {
   try {
     const db = loadDB();
@@ -330,7 +377,7 @@ app.post("/api/recategorize", async (req, res) => {
       }
     }
     db.transactions.forEach(t => {
-      t.category = categorize([], t.merchant, db.merchantCache, t.description);
+      t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
     });
     const aiResult = await classifyUnknownMerchants(db);
     saveDB(db);
@@ -733,7 +780,7 @@ app.post("/api/import/parse", async (req, res) => {
     const rates = await getExchangeRates(db);
 
     extracted.forEach(t => {
-      t.category = categorize([], t.merchant, db.merchantCache, t.description);
+      t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
       t.amount_original = t.amount;
       t.currency_original = (t.currency || "USD").toUpperCase();
       t.amount_usd = Number(toUsd(t.amount, t.currency_original, rates).toFixed(2));
@@ -781,7 +828,7 @@ app.post("/api/import/save", async (req, res) => {
         amount: Number(usdAmount.toFixed(2)),
         amount_original: origAmount,
         currency_original: origCurrency,
-        category: t.category || categorize([], t.merchant, db.merchantCache, t.description),
+        category: t.category || categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides),
         merchant: t.merchant || t.description || "",
         source: sourceLabel,
         currency: "USD",
@@ -817,7 +864,7 @@ app.get("*", (req, res) => {
   if (!db.transactions.length) return;
   let changed = 0;
   db.transactions.forEach(t => {
-    const fresh = categorize([], t.merchant, db.merchantCache, t.description);
+    const fresh = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
     if (fresh !== t.category) { t.category = fresh; changed++; }
   });
   if (changed) {

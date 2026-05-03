@@ -512,6 +512,81 @@ let txnData = [];
 let txnSort = { key: "date", dir: "desc" };
 let txnCatFilter = "All";
 let txnSearch = "";
+let txnCategories = [];
+let txnOverrides = {};
+
+async function loadCategoriesAndOverrides() {
+  try {
+    const resp = await fetch("/api/categories");
+    const data = await resp.json();
+    txnCategories = data.categories || [];
+    txnOverrides = data.overrides || {};
+  } catch {}
+}
+
+function openCategoryPicker(btn) {
+  const merchant = btn.dataset.merchant;
+  const current = btn.dataset.current;
+  if (!merchant) {
+    alert("Cannot override a transaction without a merchant name.");
+    return;
+  }
+  // Replace the badge in place with a select.
+  const select = document.createElement("select");
+  select.style.cssText = "background:var(--surface);color:var(--text);border:1px solid var(--accent);border-radius:999px;padding:2px 8px;font-size:11px;font-family:inherit;cursor:pointer;outline:none;";
+  const autoOpt = document.createElement("option");
+  autoOpt.value = "__auto__";
+  autoOpt.textContent = txnOverrides[merchant] ? "Auto (clear override)" : "(no change)";
+  select.appendChild(autoOpt);
+  txnCategories.forEach(c => {
+    const o = document.createElement("option");
+    o.value = c; o.textContent = c;
+    if (c === current) o.selected = true;
+    select.appendChild(o);
+  });
+  btn.replaceWith(select);
+  select.focus();
+
+  let resolved = false;
+  const finish = async (chosen) => {
+    if (resolved) return;
+    resolved = true;
+    if (!chosen || chosen === "__auto__" && !txnOverrides[merchant]) {
+      // No-op
+      renderTransactions();
+      return;
+    }
+    const body = chosen === "__auto__" ? { merchant, category: null } : { merchant, category: chosen };
+    try {
+      const resp = await fetch("/api/overrides", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      if (data.cleared) delete txnOverrides[merchant];
+      else txnOverrides[merchant] = data.category;
+      // Update local txnData so we don't need to reload.
+      txnData.forEach(t => {
+        if (t.merchant === merchant) {
+          if (data.cleared) {
+            // For cleared overrides we need fresh data — easier to reload.
+          } else {
+            t.category = data.category;
+          }
+        }
+      });
+      if (data.cleared) await loadTransactions();
+      else renderTransactions();
+    } catch (err) {
+      console.error("Override failed:", err);
+      renderTransactions();
+    }
+  };
+  select.addEventListener("change", () => finish(select.value));
+  select.addEventListener("blur", () => finish(null));
+}
 
 function setTxnSearch(v) {
   txnSearch = v.trim().toLowerCase();
@@ -521,8 +596,11 @@ function setTxnSearch(v) {
 async function loadTransactions() {
   try {
     const days = dashWindow === "all" ? 100000 : Number(dashWindow);
-    const resp = await fetch(`/api/transactions?days=${days}`);
-    txnData = await resp.json();
+    const [txResp] = await Promise.all([
+      fetch(`/api/transactions?days=${days}`),
+      loadCategoriesAndOverrides(),
+    ]);
+    txnData = await txResp.json();
     renderCatFilter();
     renderTransactions();
   } catch (err) { console.error(err); }
@@ -587,19 +665,30 @@ function renderTransactions() {
     const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     const catColor = CAT_COLORS[t.category] || "var(--dim)";
     const srcColor = sourceColor(t.source);
+    const overridden = !!txnOverrides[t.merchant];
+    const dot = overridden ? '<span title="Manually overridden" style="opacity:0.7;margin-right:3px;">●</span>' : '';
     const amountHtml = (t.currency_original && t.currency_original !== "USD")
       ? `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${t.amount_original?.toFixed(2)} ${t.currency_original}</span></span>`
       : `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>`;
+    const merchantAttr = (t.merchant || '').replace(/"/g, "&quot;");
     return `
       <div class="txn-row">
         <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${t.description}</span>
-        <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
+        <button class="badge cat-edit" data-merchant="${merchantAttr}" data-current="${t.category||'Other'}"
+                style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44;cursor:pointer;font:inherit;padding:2px 8px;"
+                title="Click to change category${overridden ? ' (currently overridden)' : ''}">
+          ${dot}${(t.category||'Other').split(' ')[0]}
+        </button>
         <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${t.source}</span>
         ${amountHtml}
       </div>
     `;
   }).join("");
+
+  document.querySelectorAll(".cat-edit").forEach(b => {
+    b.addEventListener("click", e => openCategoryPicker(e.currentTarget));
+  });
 }
 
 // ---- AI Insights ----
