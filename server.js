@@ -330,18 +330,42 @@ app.patch("/api/transactions/:id", (req, res) => {
     const t = db.transactions.find(x => x.id === req.params.id);
     if (!t) return res.status(404).json({ error: "transaction not found" });
 
+    const oldDesc = t.description;
+    const oldMerchant = t.merchant;
+
     let updated = 0;
+    const oldMerchantsTouched = new Set();
     if (applyToAll) {
-      const oldDesc = t.description;
       db.transactions.forEach(x => {
-        if (x.description === oldDesc) { x.description = trimmed; updated++; }
+        if (x.description !== oldDesc) return;
+        if (x.merchant) oldMerchantsTouched.add(x.merchant);
+        x.description = trimmed;
+        x.merchant = trimmed;
+        updated++;
       });
     } else {
+      if (t.merchant) oldMerchantsTouched.add(t.merchant);
       t.description = trimmed;
+      t.merchant = trimmed;
       updated = 1;
     }
+    // Migrate per-merchant override / AI-cache entries to the new merchant key
+    // for every old merchant we just orphaned.
+    oldMerchantsTouched.forEach(om => {
+      if (om === trimmed) return;
+      const stillUsed = db.transactions.some(x => x.merchant === om);
+      if (stillUsed) return;
+      if (db.merchantOverrides[om]) {
+        db.merchantOverrides[trimmed] = db.merchantOverrides[om];
+        delete db.merchantOverrides[om];
+      }
+      if (db.merchantCache[om]) {
+        db.merchantCache[trimmed] = db.merchantCache[om];
+        delete db.merchantCache[om];
+      }
+    });
     saveDB(db);
-    res.json({ id: t.id, description: trimmed, updated });
+    res.json({ id: t.id, description: trimmed, merchant: t.merchant, updated });
   } catch (err) {
     console.error("Description edit error:", err);
     res.status(500).json({ error: "Failed to update description" });

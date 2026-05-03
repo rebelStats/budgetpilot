@@ -776,10 +776,14 @@ function openDescriptionEditor(span) {
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
       if (applyToAll) {
-        txnData.forEach(x => { if (x.description === original) x.description = newValue; });
+        txnData.forEach(x => {
+          if (x.description !== original) return;
+          x.merchant = newValue;
+          x.description = newValue;
+        });
       } else {
         const t = txnData.find(x => x.id === id);
-        if (t) t.description = newValue;
+        if (t) { t.merchant = newValue; t.description = newValue; }
       }
     } catch (err) {
       console.error("Rename failed:", err);
