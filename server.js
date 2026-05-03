@@ -45,8 +45,11 @@ const CATEGORIES = [
 // Currency Exchange is fully excluded from spend totals.
 const EXCLUDED_FROM_SPEND = new Set(["Currency Exchange"]);
 
-function categorize(plaidCategories, merchantName, cache) {
-  const regex = mapCategory(plaidCategories, merchantName);
+function categorize(plaidCategories, merchantName, cache, description) {
+  // Run regex against description+merchant combined — patterns like
+  // "Transfer to <PERSON>" only match the full description, not the cleaned merchant.
+  const searchText = description ? `${description} ${merchantName || ""}`.trim() : (merchantName || "");
+  const regex = mapCategory(plaidCategories, searchText);
   if (regex !== "Other") return regex;
   const cached = cache?.[merchantName];
   if (cached && CATEGORIES.includes(cached)) return cached;
@@ -66,7 +69,13 @@ async function classifyMerchantsWithAI(merchants) {
   const prompt = `Classify each merchant name into ONE of these spending categories:
 ${CATEGORIES.join(", ")}
 
-Return ONLY a JSON object mapping merchant → category. Use "Other" only when no category fits. Do not invent new categories.
+Important rules:
+- "Transfers & Payments" is ONLY for person-to-person money transfers (e.g. "Transfer to John Smith", "Send to Mom"). Payment processors and gateways like Blue Media, Vimpay, Stripe, PayPal, etc. are NOT transfers — classify by what the user actually bought (or "Other" if unclear).
+- "Currency Exchange" is ONLY for explicit FX conversions between own wallets (e.g. "Exchanged to HUF").
+- "Cash & ATM" is for ATM withdrawals and cash advances.
+- Use "Other" when truly unclear. Do not invent new categories.
+
+Return ONLY a JSON object mapping merchant → category.
 
 Merchants:
 ${JSON.stringify(merchants)}`;
@@ -137,8 +146,9 @@ function mapCategory(plaidCategories, merchantName) {
   const cats = (plaidCategories || []).join(" ").toLowerCase();
   const m = (merchantName || "").toLowerCase();
 
-  if (/exchange|currency conversion|fx (gain|loss|fee)|wallet to wallet/i.test(cats) || /\bexchange\b|\bfx\b|currency conv|exchanged (from|to)|to (eur|usd|gbp|huf|pln|chf|sek|nok|dkk|czk|ron|try|jpy|cny|cad|aud)\b|wallet to wallet|vault transfer/i.test(m)) return "Currency Exchange";
-  if (/atm|cash advance|cash withdrawal/i.test(cats) || /\batm\b|cash withdraw|cash advance|withdraw cash|cashback/i.test(m)) return "Cash & ATM";
+  if (/exchange|currency conversion|fx (gain|loss|fee)/i.test(cats) || /^exchanged? (to|from)\b|\bcurrency conversion\b|^fx /i.test(m)) return "Currency Exchange";
+  if (/atm|cash advance|cash withdrawal/i.test(cats) || /^cash withdraw|^withdrawal at|\batm\b|cash advance/i.test(m)) return "Cash & ATM";
+  if (/^transfer (to|from)\s/i.test(m)) return "Transfers & Payments";
   if (/government|tax authority/i.test(cats) || /e-pit|skarbowy|urząd|us skarbowy/i.test(m)) return "Taxes & Government";
   if (/groceries|supermarket/i.test(cats) || /spar|lidl|carrefour|frisco|zabka|biedronka|tesco|piekarnia|crazy butcher/i.test(m)) return "Groceries";
   if (/restaurant|dining|food and drink|cafe|coffee/i.test(cats) || /wolt|bolt food|kantin|kantyna|étterem|restauracja|kawiarnia|ramen|pizza|burger|sushi|wafu|frici|monokini|tarka macska/i.test(m)) return "Dining & Restaurants";
@@ -146,13 +156,13 @@ function mapCategory(plaidCategories, merchantName) {
   if (/airlines|travel|hotel|lodging/i.test(cats) || /wizz|getyourguide|booking\.com|airbnb|ryanair|lot polish/i.test(m)) return "Flights & Travel";
   if (/pharmacy|health|medical|doctor|dentist/i.test(cats) || /taban medical|patika|apteka|medis|aurismed|lafit/i.test(m)) return "Medical & Pharmacy";
   if (/shops|shopping|online|amazon|ebay/i.test(cats) || /amazon|ebay|allegro|ikea|g2a\.com|moka united|shopinext/i.test(m)) return "Shopping & Online";
-  if (/subscription|digital|streaming|software/i.test(cats) || /apple\.com|google \*|google one|imdbpro|audible|netflix|spotify|claude\.ai|openai|chatgpt|github|anthropic/i.test(m)) return "Subscriptions & Digital";
+  if (/subscription|digital|streaming|software/i.test(cats) || /apple\.com|google \*|google one|imdbpro|audible|netflix|spotify|claude\.ai|openai|chatgpt|github|anthropic|metal plan fee|premium plan fee|standard plan fee|revolut plan/i.test(m)) return "Subscriptions & Digital";
   if (/home|furniture|hardware/i.test(cats)) return "Home & Furniture";
   if (/entertainment|recreation|gaming/i.test(cats) || /getcracked|exponent member/i.test(m)) return "Entertainment";
   if (/clothing|apparel/i.test(cats) || /new yorker|reserved|dior|rossmann/i.test(m)) return "Clothing & Fashion";
   if (/personal care|beauty|barber|salon/i.test(cats) || /barber|salon|fryzjer/i.test(m)) return "Personal Care";
   if (/utilities|telecom|phone|internet|bills/i.test(cats) || /telekom|orange|t-mobile|play|plus gsm/i.test(m)) return "Utilities & Bills";
-  if (/transfer|payment|bank/i.test(cats) || /blue media|simplep\*vimpay/i.test(m)) return "Transfers & Payments";
+  if (/transfer|payment|bank/i.test(cats)) return "Transfers & Payments";
   return "Other";
 }
 
@@ -243,7 +253,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
     // Re-categorize existing transactions so a categorizer fix is reflected
     // without forcing the user to wipe their data.
     db.transactions.forEach(t => {
-      t.category = categorize([], t.merchant || t.description, db.merchantCache);
+      t.category = categorize([], t.merchant, db.merchantCache, t.description);
     });
 
     for (const [access_token, institution_name] of tokenSet) {
@@ -268,7 +278,7 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
             date: t.date,
             description: t.name || t.merchant_name || "Unknown",
             amount: t.amount,
-            category: categorize(t.category, t.merchant_name || t.name, db.merchantCache),
+            category: categorize(t.category, t.merchant_name, db.merchantCache, t.name),
             merchant: t.merchant_name || t.name || "",
             source: institution_name,
             currency: t.iso_currency_code || "USD",
@@ -306,13 +316,26 @@ app.get("/api/accounts", (req, res) => {
 app.post("/api/recategorize", async (req, res) => {
   try {
     const db = loadDB();
+    // Drop AI cache entries the regex would now claim, so they re-flow through the
+    // fast path. This catches the case where a stale "Transfers & Payments" cache
+    // hit hides a now-stricter Transfers-only definition.
+    let purged = 0;
+    for (const m of Object.keys(db.merchantCache)) {
+      const fresh = mapCategory([], m);
+      if (fresh !== "Other") { delete db.merchantCache[m]; purged++; continue; }
+      // Also drop misclassified processor names that are stuck on transfers/payments
+      if (db.merchantCache[m] === "Transfers & Payments" && !/^transfer (to|from)\s/i.test(m)) {
+        delete db.merchantCache[m];
+        purged++;
+      }
+    }
     db.transactions.forEach(t => {
-      t.category = categorize([], t.merchant || t.description, db.merchantCache);
+      t.category = categorize([], t.merchant, db.merchantCache, t.description);
     });
     const aiResult = await classifyUnknownMerchants(db);
     saveDB(db);
     const stillOther = db.transactions.filter(t => t.category === "Other").length;
-    res.json({ total: db.transactions.length, aiClassified: aiResult.classified, stillOther });
+    res.json({ total: db.transactions.length, purgedCache: purged, aiClassified: aiResult.classified, stillOther });
   } catch (err) {
     console.error("Recategorize error:", err.message);
     res.status(500).json({ error: "Failed to recategorize" });
@@ -578,6 +601,43 @@ app.post("/api/chat", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Currency conversion — ECB rates via Frankfurter (free, no API key, daily refresh)
+// ---------------------------------------------------------------------------
+const RATE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function getExchangeRates(db) {
+  const cached = db.exchangeRates;
+  if (cached && cached.rates && (Date.now() - cached.updatedAt) < RATE_TTL_MS) {
+    return cached.rates;
+  }
+  try {
+    const resp = await fetch("https://api.frankfurter.app/latest?from=USD");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const rates = { USD: 1, ...data.rates };
+    db.exchangeRates = { rates, updatedAt: Date.now(), date: data.date };
+    saveDB(db);
+    return rates;
+  } catch (err) {
+    console.error("Failed to fetch exchange rates:", err.message);
+    return cached?.rates || { USD: 1 };
+  }
+}
+
+function toUsd(amount, currency, rates) {
+  if (!currency || currency.toUpperCase() === "USD") return amount;
+  const rate = rates[currency.toUpperCase()];
+  if (!rate) return amount;
+  return amount / rate;
+}
+
+app.get("/api/exchange-rates", async (req, res) => {
+  const db = loadDB();
+  const rates = await getExchangeRates(db);
+  res.json({ rates, updatedAt: db.exchangeRates?.updatedAt, date: db.exchangeRates?.date });
+});
+
+// ---------------------------------------------------------------------------
 // Routes: CSV / PDF import
 // ---------------------------------------------------------------------------
 async function extractTransactionsFromFile({ filename, mimeType, base64data }) {
@@ -588,16 +648,27 @@ async function extractTransactionsFromFile({ filename, mimeType, base64data }) {
   const isPdf = (mimeType && mimeType.includes("pdf")) || /\.pdf$/i.test(filename || "");
   const isCsv = /\.csv$/i.test(filename || "") || mimeType === "text/csv" || mimeType === "text/plain";
 
-  const instructions = `Extract every spending transaction from this financial statement.
+  const instructions = `Extract every MONEY-OUT transaction from this financial statement (money leaving the account).
 
-Return ONLY a JSON array (no prose, no markdown fences) of objects with these exact fields:
+INCLUDE:
+- Card purchases
+- ATM cash withdrawals (e.g. "Cash withdrawal at ...")
+- Outgoing currency exchanges (e.g. "Exchanged to HUF") — keep the source-currency amount
+- Outgoing transfers to people (e.g. "Transfer to JOHN SMITH")
+- Subscription/plan fees, account fees
+
+SKIP:
+- Money-in / incoming items: top-ups, deposits, salary, refunds, returns, incoming transfers ("Transfer from ...", "Top-up by ...")
+- Any line in the "Money in" column with no "Money out" amount
+
+Return ONLY a JSON array (no prose, no markdown fences) of objects with these fields:
 - date: YYYY-MM-DD
-- description: full original line text (cleaned of obvious garbage)
-- amount: positive number representing money the user SPENT (debit/charge). SKIP refunds, deposits, transfers in, salary, and any credit/positive-balance line.
-- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST 12-04")
-- currency: 3-letter ISO code (default "USD" if unclear)
+- description: full original transaction description, INCLUDING the "Transfer to <NAME>" or "Exchanged to <CCY>" prefix verbatim if present
+- amount: positive number, in the SOURCE currency shown in the "Money out" column (do not convert)
+- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST"). For transfers use the recipient name. For exchanges use "Exchange". For cash withdrawals use the ATM/location name.
+- currency: 3-letter ISO code of the source amount (e.g. "PLN", "EUR", "HUF", "USD")
 
-Return [] if no spending transactions are found.`;
+Return [] if no money-out transactions are found.`;
 
   let content;
   if (isPdf) {
@@ -660,7 +731,7 @@ app.post("/api/import/parse", async (req, res) => {
 
     const db = loadDB();
     extracted.forEach(t => {
-      t.category = categorize([], t.merchant || t.description, db.merchantCache);
+      t.category = categorize([], t.merchant, db.merchantCache, t.description);
     });
 
     res.json({ transactions: extracted });
@@ -679,23 +750,31 @@ app.post("/api/import/save", async (req, res) => {
     const sourceLabel = (source || "Imported").slice(0, 50);
 
     const db = loadDB();
+    const rates = await getExchangeRates(db);
     const existing = new Set(db.transactions.map(t => t.id));
 
     let added = 0;
     let skipped = 0;
+    let converted = 0;
     for (const t of transactions) {
       const id = importTxnId(t, sourceLabel);
       if (existing.has(id)) { skipped++; continue; }
+      const origAmount = Number(t.amount);
+      const origCurrency = (t.currency || "USD").toUpperCase();
+      const usdAmount = toUsd(origAmount, origCurrency, rates);
+      if (origCurrency !== "USD") converted++;
       db.transactions.push({
         id,
         account_id: `import:${sourceLabel}`,
         date: t.date,
         description: t.description,
-        amount: Number(t.amount),
-        category: t.category || categorize([], t.merchant || t.description, db.merchantCache),
+        amount: Number(usdAmount.toFixed(2)),
+        amount_original: origAmount,
+        currency_original: origCurrency,
+        category: t.category || categorize([], t.merchant, db.merchantCache, t.description),
         merchant: t.merchant || t.description || "",
         source: sourceLabel,
-        currency: t.currency || "USD",
+        currency: "USD",
       });
       existing.add(id);
       added++;
@@ -705,9 +784,9 @@ app.post("/api/import/save", async (req, res) => {
       const aiResult = await classifyUnknownMerchants(db);
       db.transactions.sort((a, b) => b.date.localeCompare(a.date));
       saveDB(db);
-      return res.json({ added, skipped, aiClassified: aiResult.classified, total: db.transactions.length });
+      return res.json({ added, skipped, converted, aiClassified: aiResult.classified, total: db.transactions.length });
     }
-    res.json({ added, skipped, total: db.transactions.length });
+    res.json({ added, skipped, converted, total: db.transactions.length });
   } catch (err) {
     console.error("Import save error:", err);
     res.status(500).json({ error: "Failed to save imported transactions" });
@@ -728,7 +807,7 @@ app.get("*", (req, res) => {
   if (!db.transactions.length) return;
   let changed = 0;
   db.transactions.forEach(t => {
-    const fresh = categorize([], t.merchant || t.description, db.merchantCache);
+    const fresh = categorize([], t.merchant, db.merchantCache, t.description);
     if (fresh !== t.category) { t.category = fresh; changed++; }
   });
   if (changed) {

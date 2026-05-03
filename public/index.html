@@ -587,13 +587,16 @@ function renderTransactions() {
     const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     const catColor = CAT_COLORS[t.category] || "var(--dim)";
     const srcColor = sourceColor(t.source);
+    const amountHtml = (t.currency_original && t.currency_original !== "USD")
+      ? `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${t.amount_original?.toFixed(2)} ${t.currency_original}</span></span>`
+      : `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>`;
     return `
       <div class="txn-row">
         <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${t.description}</span>
         <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
         <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${t.source}</span>
-        <span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>
+        ${amountHtml}
       </div>
     `;
   }).join("");
