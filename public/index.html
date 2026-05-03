@@ -717,9 +717,17 @@ function renderTransactions() {
 
   const footer = document.getElementById("txn-footer");
   if (rows.length) {
-    const totalUsd = rows.reduce((s, t) => s + Number(t.amount || 0), 0);
-    document.getElementById("txn-footer-count").textContent = `${rows.length} transaction${rows.length === 1 ? '' : 's'}`;
-    document.getElementById("txn-footer-total").textContent = fmt(totalUsd);
+    const spendRows = rows.filter(t => t.category !== "Currency Exchange");
+    const exchangeRows = rows.filter(t => t.category === "Currency Exchange");
+    const totalSpend = spendRows.reduce((s, t) => s + Number(t.amount || 0), 0);
+    const totalExchanged = exchangeRows.reduce((s, t) => s + Number(t.amount || 0), 0);
+    const countNote = exchangeRows.length
+      ? `${spendRows.length} spend · ${exchangeRows.length} exchange${exchangeRows.length === 1 ? '' : 's'}`
+      : `${spendRows.length} transaction${spendRows.length === 1 ? '' : 's'}`;
+    document.getElementById("txn-footer-count").textContent = countNote;
+    document.getElementById("txn-footer-total").innerHTML = exchangeRows.length
+      ? `${fmt(totalSpend)}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">+ ${fmt(totalExchanged)} exchanged (excluded)</span>`
+      : fmt(totalSpend);
     footer.style.display = "";
   } else {
     footer.style.display = "none";
