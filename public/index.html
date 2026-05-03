@@ -453,7 +453,6 @@ async function loadDashboard() {
       <div class="card stat-card"><div class="stat-label">Total spent</div><div class="stat-value mono">${fmt(data.total)}</div><div class="stat-sub">${windowLabel}</div></div>
       <div class="card stat-card"><div class="stat-label">Monthly avg</div><div class="stat-value mono" style="color:var(--accent-l)">${fmt(data.monthlyAvg)}</div></div>
       <div class="card stat-card"><div class="stat-label">Transactions</div><div class="stat-value mono">${data.count}</div></div>
-      <div class="card stat-card"><div class="stat-label">Top category</div><div class="stat-value" style="font-size:18px;color:var(--amber)">${data.byCategory[0]?.category || '—'}</div><div class="stat-sub">${data.byCategory[0] ? fmt(data.byCategory[0].total) : ''}</div></div>
     `;
 
     const mm = data.moneyMovement || {};
@@ -498,8 +497,9 @@ async function loadDashboard() {
 
     // Weekly chart
     if (weekChart) weekChart.destroy();
-    const weekLabels = data.byWeek.map(w => w.week);
-    const weekData = data.byWeek.map(w => w.total);
+    const weeks = data.byWeek;
+    const weekLabels = weeks.map(w => w.week);
+    const weekData = weeks.map(w => w.total);
     const weekThreshold = data.monthlyAvg * 0.3;
     weekChart = new Chart(document.getElementById("weekChart"), {
       type: "bar",
@@ -513,7 +513,28 @@ async function loadDashboard() {
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => " " + fmt(ctx.raw) } } },
+        onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : ""; },
+        onClick: (e, els) => {
+          if (!els.length) return;
+          const w = weeks[els[0].index];
+          if (!w?.weekStart) return;
+          const monday = new Date(w.weekStart + "T00:00:00");
+          const sunday = new Date(monday);
+          sunday.setDate(monday.getDate() + 6);
+          const iso = d => d.toISOString().slice(0, 10);
+          showView("transactions");
+          // Wait for the view to render its inputs before populating them
+          setTimeout(() => {
+            txnDateFrom = iso(monday);
+            txnDateTo = iso(sunday);
+            const fromEl = document.getElementById("txn-date-from");
+            const toEl = document.getElementById("txn-date-to");
+            if (fromEl) fromEl.value = txnDateFrom;
+            if (toEl) toEl.value = txnDateTo;
+            renderTransactions();
+          }, 0);
+        },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => " " + fmt(ctx.raw) + " · click to view" } } },
         scales: {
           x: { ticks: { color: "#64748b", font: { size: 10 } }, grid: { color: "rgba(255,255,255,0.04)" } },
           y: { ticks: { color: "#64748b", font: { size: 10 }, callback: v => "$" + v }, grid: { color: "rgba(255,255,255,0.04)" } }

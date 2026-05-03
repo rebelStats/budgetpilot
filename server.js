@@ -547,7 +547,7 @@ app.get("/api/summary", (req, res) => {
     count: txns.length,
     monthlyAvg: months.size > 0 ? total / months.size : 0,
     byCategory: Object.values(catMap).sort((a, b) => b.total - a.total),
-    byWeek: Object.entries(weekMap).sort((a, b) => a[0].localeCompare(b[0])).map(([_, v]) => ({ week: v.label, total: v.total })),
+    byWeek: Object.entries(weekMap).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => ({ week: v.label, weekStart: k, total: v.total })),
     bySource: Object.values(srcMap).sort((a, b) => b.total - a.total),
     topMerchants: Object.values(merchMap).filter(m => m.count >= 2).sort((a, b) => b.total - a.total).slice(0, 15),
     moneyMovement: movement,
