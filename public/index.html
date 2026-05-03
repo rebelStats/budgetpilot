@@ -906,7 +906,10 @@ async function handleImportFile(file) {
 
     const totalUsd = importParsed.reduce((s, t) => s + Number(t.amount_usd ?? t.amount), 0);
     const currencies = [...new Set(importParsed.map(t => t.currency_original).filter(c => c && c !== "USD"))];
-    const ratesNote = (currencies.length && data.ratesDate) ? ` · ${currencies.join("/")} converted at ECB rates from ${data.ratesDate}` : "";
+    const monthsUsed = data.monthsUsed || [];
+    const ratesNote = (currencies.length && monthsUsed.length)
+      ? ` · ${currencies.join("/")} converted using monthly-average ECB rates (${monthsUsed[0]}${monthsUsed.length > 1 ? `–${monthsUsed[monthsUsed.length-1]}` : ""})`
+      : "";
     status.innerHTML = `<div style="padding:12px 16px;border-radius:8px;background:rgba(99,102,241,0.12);color:var(--accent-l);font-size:14px;">
       Found ${importParsed.length} transactions totaling ${fmt(totalUsd)}${ratesNote}. Review below and click Import to save.
     </div>`;

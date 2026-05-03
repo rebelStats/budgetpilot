@@ -22,10 +22,11 @@ function loadDB() {
       const data = JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
       if (!data.merchantCache) data.merchantCache = {};
       if (!data.merchantOverrides) data.merchantOverrides = {};
+      if (!data.exchangeRatesByMonth) data.exchangeRatesByMonth = {};
       return data;
     }
   } catch { }
-  return { accounts: [], transactions: [], merchantCache: {}, merchantOverrides: {} };
+  return { accounts: [], transactions: [], merchantCache: {}, merchantOverrides: {}, exchangeRatesByMonth: {} };
 }
 
 function saveDB(data) {
@@ -728,9 +729,64 @@ async function getExchangeRates(db) {
 
 function toUsd(amount, currency, rates) {
   if (!currency || currency.toUpperCase() === "USD") return amount;
+  if (!rates) return amount;
   const rate = rates[currency.toUpperCase()];
   if (!rate) return amount;
   return amount / rate;
+}
+
+// Average of daily ECB rates over a month. Once a month closes the average is
+// fixed forever (cached). The current month is recomputed on a 24h TTL to fold
+// in newly-published days.
+async function getMonthlyAverageRates(yearMonth, db) {
+  if (!db.exchangeRatesByMonth) db.exchangeRatesByMonth = {};
+  const cached = db.exchangeRatesByMonth[yearMonth];
+  const todayMonth = new Date().toISOString().slice(0, 7);
+  const isClosed = yearMonth < todayMonth;
+  if (cached?.rates && (isClosed || (Date.now() - cached.updatedAt) < RATE_TTL_MS)) {
+    return cached.rates;
+  }
+
+  const [yr, mo] = yearMonth.split("-").map(Number);
+  const startDate = `${yearMonth}-01`;
+  const lastOfMonth = new Date(yr, mo, 0).getDate();
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const monthEnd = `${yearMonth}-${String(lastOfMonth).padStart(2, "0")}`;
+  const endDate = isClosed ? monthEnd : (todayIso < monthEnd ? todayIso : monthEnd);
+
+  try {
+    const resp = await fetch(`https://api.frankfurter.app/${startDate}..${endDate}?from=USD`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const sums = {};
+    const counts = {};
+    let dayCount = 0;
+    for (const dayRates of Object.values(data.rates || {})) {
+      dayCount++;
+      for (const [ccy, rate] of Object.entries(dayRates)) {
+        sums[ccy] = (sums[ccy] || 0) + rate;
+        counts[ccy] = (counts[ccy] || 0) + 1;
+      }
+    }
+    if (!dayCount) throw new Error(`no rates returned for ${yearMonth}`);
+    const avg = { USD: 1 };
+    for (const ccy of Object.keys(sums)) avg[ccy] = sums[ccy] / counts[ccy];
+
+    db.exchangeRatesByMonth[yearMonth] = { rates: avg, updatedAt: Date.now(), days: dayCount };
+    saveDB(db);
+    return avg;
+  } catch (err) {
+    console.error(`Failed to fetch monthly rates for ${yearMonth}:`, err.message);
+    return cached?.rates || null;
+  }
+}
+
+async function getRatesForMonths(monthSet, db) {
+  const result = {};
+  for (const m of monthSet) {
+    result[m] = await getMonthlyAverageRates(m, db);
+  }
+  return result;
 }
 
 app.get("/api/exchange-rates", async (req, res) => {
@@ -832,18 +888,23 @@ app.post("/api/import/parse", async (req, res) => {
     const extracted = await extractTransactionsFromFile({ filename, mimeType, base64data });
 
     const db = loadDB();
-    const rates = await getExchangeRates(db);
+    const spotRates = await getExchangeRates(db);
+    const months = new Set(extracted.map(t => (t.date || "").slice(0, 7)).filter(Boolean));
+    const monthRates = await getRatesForMonths(months, db);
 
     extracted.forEach(t => {
       t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
       t.amount_original = t.amount;
       t.currency_original = (t.currency || "USD").toUpperCase();
+      const ym = (t.date || "").slice(0, 7);
+      const rates = monthRates[ym] || spotRates;
       t.amount_usd = Number(toUsd(t.amount, t.currency_original, rates).toFixed(2));
+      t.fx_month = ym;
     });
 
     res.json({
       transactions: extracted,
-      ratesDate: db.exchangeRates?.date,
+      monthsUsed: [...months].sort(),
     });
   } catch (err) {
     console.error("Import parse error:", err);
@@ -860,7 +921,9 @@ app.post("/api/import/save", async (req, res) => {
     const sourceLabel = (source || "Imported").slice(0, 50);
 
     const db = loadDB();
-    const rates = await getExchangeRates(db);
+    const spotRates = await getExchangeRates(db);
+    const months = new Set(transactions.map(t => (t.date || "").slice(0, 7)).filter(Boolean));
+    const monthRates = await getRatesForMonths(months, db);
     const existing = new Set(db.transactions.map(t => t.id));
 
     let added = 0;
@@ -871,6 +934,8 @@ app.post("/api/import/save", async (req, res) => {
       if (existing.has(id)) { skipped++; continue; }
       const origAmount = Number(t.amount_original ?? t.amount);
       const origCurrency = (t.currency_original || t.currency || "USD").toUpperCase();
+      const ym = (t.date || "").slice(0, 7);
+      const rates = monthRates[ym] || spotRates;
       const usdAmount = (typeof t.amount_usd === "number")
         ? t.amount_usd
         : toUsd(origAmount, origCurrency, rates);
@@ -883,6 +948,7 @@ app.post("/api/import/save", async (req, res) => {
         amount: Number(usdAmount.toFixed(2)),
         amount_original: origAmount,
         currency_original: origCurrency,
+        fx_month: ym || undefined,
         category: t.category || categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides),
         merchant: t.merchant || t.description || "",
         source: sourceLabel,
