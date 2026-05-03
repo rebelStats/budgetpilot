@@ -35,11 +35,15 @@ function saveDB(data) {
 // Category mapping: regex fast path → AI classifier (cached) → "Other"
 // ---------------------------------------------------------------------------
 const CATEGORIES = [
-  "Taxes & Government", "Groceries", "Dining & Restaurants", "Transport & Rides",
-  "Flights & Travel", "Medical & Pharmacy", "Shopping & Online", "Subscriptions & Digital",
-  "Home & Furniture", "Entertainment", "Clothing & Fashion", "Personal Care",
-  "Utilities & Bills", "Transfers & Payments", "Other"
+  "Currency Exchange", "Cash & ATM", "Taxes & Government", "Groceries",
+  "Dining & Restaurants", "Transport & Rides", "Flights & Travel", "Medical & Pharmacy",
+  "Shopping & Online", "Subscriptions & Digital", "Home & Furniture", "Entertainment",
+  "Clothing & Fashion", "Personal Care", "Utilities & Bills", "Transfers & Payments", "Other"
 ];
+
+// Categories that represent money-movement, not discretionary spending.
+// Currency Exchange is fully excluded from spend totals.
+const EXCLUDED_FROM_SPEND = new Set(["Currency Exchange"]);
 
 function categorize(plaidCategories, merchantName, cache) {
   const regex = mapCategory(plaidCategories, merchantName);
@@ -133,6 +137,8 @@ function mapCategory(plaidCategories, merchantName) {
   const cats = (plaidCategories || []).join(" ").toLowerCase();
   const m = (merchantName || "").toLowerCase();
 
+  if (/exchange|currency conversion|fx (gain|loss|fee)|wallet to wallet/i.test(cats) || /\bexchange\b|\bfx\b|currency conv|exchanged (from|to)|to (eur|usd|gbp|huf|pln|chf|sek|nok|dkk|czk|ron|try|jpy|cny|cad|aud)\b|wallet to wallet|vault transfer/i.test(m)) return "Currency Exchange";
+  if (/atm|cash advance|cash withdrawal/i.test(cats) || /\batm\b|cash withdraw|cash advance|withdraw cash|cashback/i.test(m)) return "Cash & ATM";
   if (/government|tax authority/i.test(cats) || /e-pit|skarbowy|urząd|us skarbowy/i.test(m)) return "Taxes & Government";
   if (/groceries|supermarket/i.test(cats) || /spar|lidl|carrefour|frisco|zabka|biedronka|tesco|piekarnia|crazy butcher/i.test(m)) return "Groceries";
   if (/restaurant|dining|food and drink|cafe|coffee/i.test(cats) || /wolt|bolt food|kantin|kantyna|étterem|restauracja|kawiarnia|ramen|pizza|burger|sushi|wafu|frici|monokini|tarka macska/i.test(m)) return "Dining & Restaurants";
@@ -358,7 +364,18 @@ app.get("/api/summary", (req, res) => {
   const { days = 90 } = req.query;
   const db = loadDB();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const txns = db.transactions.filter(t => t.date >= cutoff);
+  const allInWindow = db.transactions.filter(t => t.date >= cutoff);
+
+  // Money movement (FX, cash, transfers) — broken out for the dashboard widget.
+  const movement = { exchanged: 0, cashAtm: 0, transfers: 0, exchangeCount: 0, cashCount: 0, transferCount: 0 };
+  allInWindow.forEach(t => {
+    if (t.category === "Currency Exchange") { movement.exchanged += t.amount; movement.exchangeCount++; }
+    else if (t.category === "Cash & ATM") { movement.cashAtm += t.amount; movement.cashCount++; }
+    else if (t.category === "Transfers & Payments") { movement.transfers += t.amount; movement.transferCount++; }
+  });
+
+  // Spend-relevant transactions: drop excluded categories so they never bias the totals.
+  const txns = allInWindow.filter(t => !EXCLUDED_FROM_SPEND.has(t.category));
 
   const total = txns.reduce((s, t) => s + t.amount, 0);
 
@@ -408,6 +425,7 @@ app.get("/api/summary", (req, res) => {
     byWeek: Object.entries(weekMap).sort((a, b) => a[0].localeCompare(b[0])).map(([_, v]) => ({ week: v.label, total: v.total })),
     bySource: Object.values(srcMap).sort((a, b) => b.total - a.total),
     topMerchants: Object.values(merchMap).filter(m => m.count >= 2).sort((a, b) => b.total - a.total).slice(0, 15),
+    moneyMovement: movement,
   });
 });
 
@@ -418,7 +436,7 @@ app.post("/api/insights", async (req, res) => {
   try {
     const db = loadDB();
     const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const txns = db.transactions.filter(t => t.date >= cutoff);
+    const txns = db.transactions.filter(t => t.date >= cutoff && !EXCLUDED_FROM_SPEND.has(t.category));
 
     const catMap = {};
     txns.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + t.amount; });
@@ -471,9 +489,11 @@ Respond ONLY in JSON: {"cut":"...","savings":"$X/month","sneaky":"...","positive
 
 function buildAdvisorContext(db) {
   const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const txns = db.transactions.filter(t => t.date >= cutoff);
+  const inWindow = db.transactions.filter(t => t.date >= cutoff);
+  const txns = inWindow.filter(t => !EXCLUDED_FROM_SPEND.has(t.category));
   const total = txns.reduce((s, t) => s + t.amount, 0);
   const months = new Set(txns.map(t => t.date.slice(0, 7))).size || 1;
+  const exchanged = inWindow.filter(t => t.category === "Currency Exchange").reduce((s, t) => s + t.amount, 0);
 
   const catMap = {};
   txns.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + t.amount; });
@@ -495,7 +515,8 @@ function buildAdvisorContext(db) {
   return `You are a sharp, candid personal financial advisor with full read access to the user's last 90 days of spending. Ground every answer in their actual transactions — cite specific merchants, dates, and dollar amounts when relevant. Be concise unless they ask for depth. Never make up numbers; if the data doesn't show something, say so.
 
 SUMMARY
-Total: $${total.toFixed(0)} over ${months} month(s) ($${(total / months).toFixed(0)}/mo avg)
+Total spending: $${total.toFixed(0)} over ${months} month(s) ($${(total / months).toFixed(0)}/mo avg)
+Currency exchanged (excluded from spending): $${exchanged.toFixed(0)}
 
 CATEGORIES
 ${cats.map(([c, v]) => `- ${c}: $${v.toFixed(0)}`).join("\n")}

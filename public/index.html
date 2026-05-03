@@ -146,6 +146,10 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
         <button class="window-btn" data-days="all">All</button>
       </div>
       <div class="grid-4" id="stat-cards"></div>
+      <div id="money-movement" class="card" style="margin-top:16px;display:none;">
+        <div class="card-title">Money movement (not counted as spending)</div>
+        <div id="money-movement-content" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;"></div>
+      </div>
       <div class="grid-2">
         <div class="card">
           <div class="card-title">Spending by category</div>
@@ -273,7 +277,8 @@ const CAT_COLORS = {
   "Subscriptions & Digital": "#14b8a6", "Home & Furniture": "#f97316", "Entertainment": "#a855f7",
   "Clothing & Fashion": "#06b6d4", "Utilities & Bills": "#64748b", "Transfers & Payments": "#3b82f6",
   "Coffee & Snacks": "#d97706", "Personal Care": "#db2777",
-  "Taxes & Government": "#475569", "Other": "#6b7280"
+  "Taxes & Government": "#475569", "Currency Exchange": "#0ea5e9",
+  "Cash & ATM": "#84cc16", "Other": "#6b7280"
 };
 
 const SRC_PALETTE = ["var(--accent)", "var(--teal)", "var(--green)", "var(--amber)"];
@@ -434,6 +439,25 @@ async function loadDashboard() {
       <div class="card stat-card"><div class="stat-label">Transactions</div><div class="stat-value mono">${data.count}</div></div>
       <div class="card stat-card"><div class="stat-label">Top category</div><div class="stat-value" style="font-size:18px;color:var(--amber)">${data.byCategory[0]?.category || '—'}</div><div class="stat-sub">${data.byCategory[0] ? fmt(data.byCategory[0].total) : ''}</div></div>
     `;
+
+    const mm = data.moneyMovement || {};
+    const mmTotal = (mm.exchanged || 0) + (mm.cashAtm || 0) + (mm.transfers || 0);
+    const mmEl = document.getElementById("money-movement");
+    if (mmTotal > 0) {
+      mmEl.style.display = "";
+      const cell = (label, color, amount, count, note) => `
+        <div style="border-left:3px solid ${color};padding-left:14px;">
+          <div class="stat-label">${label}</div>
+          <div class="stat-value mono" style="font-size:22px;color:${color}">${fmt(amount || 0)}</div>
+          <div class="stat-sub">${count || 0} transactions${note ? ` · ${note}` : ''}</div>
+        </div>`;
+      document.getElementById("money-movement-content").innerHTML =
+        cell("Currency exchange", "#0ea5e9", mm.exchanged, mm.exchangeCount, "excluded from spend") +
+        cell("Cash & ATM", "#84cc16", mm.cashAtm, mm.cashCount, "counted as spend") +
+        cell("Transfers", "#3b82f6", mm.transfers, mm.transferCount, "counted as spend");
+    } else {
+      mmEl.style.display = "none";
+    }
 
     const maxCat = data.byCategory[0]?.total || 1;
     document.getElementById("cat-bars").innerHTML = data.byCategory.slice(0, 8).map(c => `
