@@ -655,15 +655,27 @@ function buildAdvisorContext(db) {
   });
   const merchants = Object.entries(merchMap).sort((a, b) => b[1] - a[1]).slice(0, 30);
 
-  const txnLines = txns.slice(0, 250).map(t =>
+  const TXN_CAP = 2000;
+  const sortedDesc = txns.slice().sort((a, b) => b.date.localeCompare(a.date));
+  const truncated = sortedDesc.length > TXN_CAP;
+  const shown = truncated ? sortedDesc.slice(0, TXN_CAP) : sortedDesc;
+  const txnLines = shown.map(t =>
     `${t.date} | ${(t.merchant || t.description).slice(0, 40).padEnd(40)} | $${t.amount.toFixed(2).padStart(8)} | ${t.category}`
   ).join("\n");
+
+  const dates = txns.map(t => t.date).sort();
+  const oldest = dates[0] || "n/a";
+  const newest = dates[dates.length - 1] || "n/a";
+  const truncationNote = truncated
+    ? `\n\nNOTE: Only the ${TXN_CAP} most recent of ${txns.length} transactions are listed. If asked about something outside this list, say you don't have visibility into older transactions in this context.`
+    : "";
 
   return `You are a sharp, candid personal financial advisor with full read access to the user's last 90 days of spending. Ground every answer in their actual transactions — cite specific merchants, dates, and dollar amounts when relevant. Be concise unless they ask for depth. Never make up numbers; if the data doesn't show something, say so.
 
 SUMMARY
 Total spending: $${total.toFixed(0)} over ${months} month(s) ($${(total / months).toFixed(0)}/mo avg)
 Currency exchanged (excluded from spending): $${exchanged.toFixed(0)}
+Transactions in window: ${txns.length} (${oldest} → ${newest})${truncationNote}
 
 CATEGORIES
 ${cats.map(([c, v]) => `- ${c}: $${v.toFixed(0)}`).join("\n")}
@@ -671,7 +683,7 @@ ${cats.map(([c, v]) => `- ${c}: $${v.toFixed(0)}`).join("\n")}
 TOP MERCHANTS (by total spend)
 ${merchants.map(([m, v]) => `- ${m}: $${v.toFixed(0)} (${merchCount[m]}x)`).join("\n")}
 
-TRANSACTIONS (date | merchant | amount | category)
+TRANSACTIONS (date | merchant | amount | category, newest first)
 ${txnLines}`;
 }
 
