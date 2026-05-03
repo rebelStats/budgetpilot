@@ -730,11 +730,19 @@ app.post("/api/import/parse", async (req, res) => {
     const extracted = await extractTransactionsFromFile({ filename, mimeType, base64data });
 
     const db = loadDB();
+    const rates = await getExchangeRates(db);
+
     extracted.forEach(t => {
       t.category = categorize([], t.merchant, db.merchantCache, t.description);
+      t.amount_original = t.amount;
+      t.currency_original = (t.currency || "USD").toUpperCase();
+      t.amount_usd = Number(toUsd(t.amount, t.currency_original, rates).toFixed(2));
     });
 
-    res.json({ transactions: extracted });
+    res.json({
+      transactions: extracted,
+      ratesDate: db.exchangeRates?.date,
+    });
   } catch (err) {
     console.error("Import parse error:", err);
     res.status(500).json({ error: err.message || "Failed to parse file" });
@@ -759,9 +767,11 @@ app.post("/api/import/save", async (req, res) => {
     for (const t of transactions) {
       const id = importTxnId(t, sourceLabel);
       if (existing.has(id)) { skipped++; continue; }
-      const origAmount = Number(t.amount);
-      const origCurrency = (t.currency || "USD").toUpperCase();
-      const usdAmount = toUsd(origAmount, origCurrency, rates);
+      const origAmount = Number(t.amount_original ?? t.amount);
+      const origCurrency = (t.currency_original || t.currency || "USD").toUpperCase();
+      const usdAmount = (typeof t.amount_usd === "number")
+        ? t.amount_usd
+        : toUsd(origAmount, origCurrency, rates);
       if (origCurrency !== "USD") converted++;
       db.transactions.push({
         id,

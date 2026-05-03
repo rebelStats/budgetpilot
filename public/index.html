@@ -687,9 +687,11 @@ async function handleImportFile(file) {
       return;
     }
 
-    const totalAmt = importParsed.reduce((s, t) => s + Number(t.amount), 0);
+    const totalUsd = importParsed.reduce((s, t) => s + Number(t.amount_usd ?? t.amount), 0);
+    const currencies = [...new Set(importParsed.map(t => t.currency_original).filter(c => c && c !== "USD"))];
+    const ratesNote = (currencies.length && data.ratesDate) ? ` · ${currencies.join("/")} converted at ECB rates from ${data.ratesDate}` : "";
     status.innerHTML = `<div style="padding:12px 16px;border-radius:8px;background:rgba(99,102,241,0.12);color:var(--accent-l);font-size:14px;">
-      Found ${importParsed.length} transactions totaling ${fmt(totalAmt)}. Review below and click Import to save.
+      Found ${importParsed.length} transactions totaling ${fmt(totalUsd)}${ratesNote}. Review below and click Import to save.
     </div>`;
 
     renderImportPreview();
@@ -702,13 +704,18 @@ function renderImportPreview() {
   const preview = document.getElementById("import-preview");
   const rows = importParsed.map(t => {
     const catColor = CAT_COLORS[t.category] || "var(--dim)";
+    const usd = t.amount_usd ?? t.amount;
+    const showsConversion = t.currency_original && t.currency_original !== "USD";
+    const amountHtml = showsConversion
+      ? `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(usd)}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${(t.amount_original ?? t.amount).toFixed(2)} ${t.currency_original}</span></span>`
+      : `<span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(usd)}</span>`;
     return `
       <div class="txn-row">
         <span class="mono" style="font-size:11px;color:var(--dim)">${t.date}</span>
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${escapeHtml(t.description)}</span>
         <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
         <span style="color:var(--dim);font-size:12px;">${escapeHtml(t.merchant || '')}</span>
-        <span class="mono" style="text-align:right;font-size:12px;color:var(--red)">${fmt(t.amount)}</span>
+        ${amountHtml}
       </div>
     `;
   }).join("");
