@@ -316,6 +316,10 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
           if (t.amount === 0) continue;
           if (existingIds.has(t.transaction_id)) continue;
 
+          // Skip if a manual import already covers this transaction.
+          const probe = { date: t.date, amount: t.amount, merchant: t.merchant_name || t.name, description: t.name || t.merchant_name };
+          if (findCrossSourceDuplicate(probe, db.transactions)) continue;
+
           db.transactions.push({
             id: t.transaction_id,
             account_id: t.account_id,
@@ -1001,6 +1005,31 @@ function importTxnId(t, sourceLabel) {
   return "imp_" + h.digest("hex").slice(0, 24);
 }
 
+// Normalize merchant strings for fuzzy comparison: lowercase, alphanumerics only.
+function normalizeMerchant(s) {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Heuristic: same calendar date + similar absolute amount (within $1 to absorb
+// FX rounding) + merchant strings whose first 4+ alphanumeric chars overlap.
+// Catches duplicates across imports and Plaid syncs.
+function findCrossSourceDuplicate(t, existing) {
+  const date = t.date;
+  const newAmtAbs = Math.abs(Number(t.amount_usd ?? t.amount));
+  const newM = normalizeMerchant(t.merchant || t.description);
+  if (!newM || !date || !Number.isFinite(newAmtAbs)) return null;
+  for (const x of existing) {
+    if (x.date !== date) continue;
+    if (Math.abs(Math.abs(x.amount) - newAmtAbs) > 1.0) continue;
+    const xm = normalizeMerchant(x.merchant || x.description);
+    if (!xm) continue;
+    if (xm === newM) return x;
+    const a = newM.slice(0, 5), b = xm.slice(0, 5);
+    if (a.length >= 4 && (xm.startsWith(a) || newM.startsWith(b))) return x;
+  }
+  return null;
+}
+
 app.post("/api/import/parse", async (req, res) => {
   try {
     const { filename, mimeType, base64data } = req.body;
@@ -1021,11 +1050,17 @@ app.post("/api/import/parse", async (req, res) => {
       const rates = monthRates[ym] || spotRates;
       t.amount_usd = Number(toUsd(t.amount, t.currency_original, rates).toFixed(2));
       t.fx_month = ym;
+      const dup = findCrossSourceDuplicate(t, db.transactions);
+      if (dup) {
+        t.duplicate_of = { id: dup.id, source: dup.source, date: dup.date, merchant: dup.merchant, amount: dup.amount };
+      }
     });
 
+    const dupCount = extracted.filter(t => t.duplicate_of).length;
     res.json({
       transactions: extracted,
       monthsUsed: [...months].sort(),
+      duplicateCount: dupCount,
     });
   } catch (err) {
     console.error("Import parse error:", err);
@@ -1035,7 +1070,7 @@ app.post("/api/import/parse", async (req, res) => {
 
 app.post("/api/import/save", async (req, res) => {
   try {
-    const { transactions, source } = req.body;
+    const { transactions, source, includeDuplicates } = req.body;
     if (!Array.isArray(transactions) || !transactions.length) {
       return res.status(400).json({ error: "transactions array is required" });
     }
@@ -1049,10 +1084,15 @@ app.post("/api/import/save", async (req, res) => {
 
     let added = 0;
     let skipped = 0;
+    let dupSkipped = 0;
     let converted = 0;
     for (const t of transactions) {
       const id = importTxnId(t, sourceLabel);
       if (existing.has(id)) { skipped++; continue; }
+      if (!includeDuplicates && findCrossSourceDuplicate(t, db.transactions)) {
+        dupSkipped++;
+        continue;
+      }
       const origAmount = Number(t.amount_original ?? t.amount);
       const origCurrency = (t.currency_original || t.currency || "USD").toUpperCase();
       const ym = (t.date || "").slice(0, 7);
@@ -1083,9 +1123,9 @@ app.post("/api/import/save", async (req, res) => {
       const aiResult = await classifyUnknownMerchants(db);
       db.transactions.sort((a, b) => b.date.localeCompare(a.date));
       saveDB(db);
-      return res.json({ added, skipped, converted, aiClassified: aiResult.classified, total: db.transactions.length });
+      return res.json({ added, skipped, dupSkipped, converted, aiClassified: aiResult.classified, total: db.transactions.length });
     }
-    res.json({ added, skipped, converted, total: db.transactions.length });
+    res.json({ added, skipped, dupSkipped, converted, total: db.transactions.length });
   } catch (err) {
     console.error("Import save error:", err);
     res.status(500).json({ error: "Failed to save imported transactions" });

@@ -920,8 +920,11 @@ async function handleImportFile(file) {
     const ratesNote = (currencies.length && monthsUsed.length)
       ? ` · ${currencies.join("/")} converted using monthly-average ECB rates (${monthsUsed[0]}${monthsUsed.length > 1 ? `–${monthsUsed[monthsUsed.length-1]}` : ""})`
       : "";
+    const dupNote = data.duplicateCount
+      ? `<br><span style="color:var(--amber);">${data.duplicateCount} look like duplicates of existing transactions and will be skipped on import (highlighted below).</span>`
+      : "";
     status.innerHTML = `<div style="padding:12px 16px;border-radius:8px;background:rgba(99,102,241,0.12);color:var(--accent-l);font-size:14px;">
-      Found ${importParsed.length} transactions totaling ${fmt(totalUsd)}${ratesNote}. Review below and click Import to save.
+      Found ${importParsed.length} transactions totaling ${fmt(totalUsd)}${ratesNote}. Review below and click Import to save.${dupNote}
     </div>`;
 
     renderImportPreview();
@@ -943,10 +946,15 @@ function renderImportPreview() {
     const amountHtml = showsConversion
       ? `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${origStr}</span></span>`
       : `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}</span>`;
+    const isDup = !!t.duplicate_of;
+    const rowStyle = isDup ? "opacity:0.55;background:rgba(245,158,11,0.06);" : "";
+    const dupBadge = isDup
+      ? `<span class="badge" title="Looks like a duplicate of ${t.duplicate_of.source} ${t.duplicate_of.date} ${escapeHtml(t.duplicate_of.merchant || '')}" style="background:rgba(245,158,11,0.15);color:var(--amber);border:1px solid rgba(245,158,11,0.4);font-size:9px;margin-left:4px;">DUP</span>`
+      : "";
     return `
-      <div class="txn-row">
+      <div class="txn-row" style="${rowStyle}">
         <span class="mono" style="font-size:11px;color:var(--dim)">${t.date}</span>
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${escapeHtml(t.description)}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${escapeHtml(t.description)}${dupBadge}</span>
         <span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${(t.category||'Other').split(' ')[0]}</span>
         <span style="color:var(--dim);font-size:12px;">${escapeHtml(t.merchant || '')}</span>
         ${amountHtml}
@@ -954,9 +962,10 @@ function renderImportPreview() {
     `;
   }).join("");
 
+  const newCount = importParsed.filter(t => !t.duplicate_of).length;
   preview.innerHTML = `
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-      <button class="btn btn-primary" onclick="saveImport()" id="import-save-btn">Import ${importParsed.length} transactions</button>
+      <button class="btn btn-primary" onclick="saveImport()" id="import-save-btn">Import ${newCount} new transactions</button>
     </div>
     <div class="card" style="padding:0;overflow:hidden;">
       <div class="txn-header">
@@ -985,8 +994,11 @@ async function saveImport() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || "Save failed");
 
+    const skippedNote = data.skipped ? ` · ${data.skipped} exact duplicates` : '';
+    const dupNote = data.dupSkipped ? ` · ${data.dupSkipped} cross-source duplicates skipped` : '';
+    const aiNote = data.aiClassified ? ` · ${data.aiClassified} AI-classified` : '';
     document.getElementById("import-status").innerHTML = `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
-      Imported ${data.added} transactions${data.skipped ? ` · ${data.skipped} duplicates skipped` : ''}${data.aiClassified ? ` · ${data.aiClassified} AI-classified` : ''}
+      Imported ${data.added} transactions${skippedNote}${dupNote}${aiNote}
     </div>`;
     importParsed = [];
     document.getElementById("import-preview").innerHTML = "";
