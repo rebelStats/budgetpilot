@@ -2,4 +2,5 @@ node_modules/
 .env
 budgetpilot.db
 budgetpilot-data.json
+meridianwallet-data.json
 .DS_Store

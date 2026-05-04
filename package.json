@@ -1,5 +1,5 @@
 {
-  "name": "budgetpilot",
+  "name": "meridianwallet",
   "version": "1.0.0",
   "description": "Personal financial advisor with Plaid + Claude AI",
   "main": "server.js",

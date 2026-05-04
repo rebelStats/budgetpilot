@@ -14,7 +14,17 @@ app.use(express.static(path.join(__dirname, "public")));
 // ---------------------------------------------------------------------------
 // JSON file storage (zero native deps)
 // ---------------------------------------------------------------------------
-const DB_PATH = path.join(__dirname, "budgetpilot-data.json");
+const DB_PATH = path.join(__dirname, "meridianwallet-data.json");
+const LEGACY_DB_PATH = path.join(__dirname, "budgetpilot-data.json");
+
+// One-time migration: if the new file doesn't exist but the legacy one does,
+// rename it. Idempotent — safe to run on every startup.
+(function migrateDbFilename() {
+  if (!fs.existsSync(DB_PATH) && fs.existsSync(LEGACY_DB_PATH)) {
+    fs.renameSync(LEGACY_DB_PATH, DB_PATH);
+    console.log(`  Migrated data file: budgetpilot-data.json → meridianwallet-data.json`);
+  }
+})();
 
 function loadDB() {
   try {
@@ -197,8 +207,8 @@ const PLAID_COUNTRY_CODES = (process.env.PLAID_COUNTRY_CODES || "US")
 app.post("/api/plaid/create-link-token", async (req, res) => {
   try {
     const response = await plaid.linkTokenCreate({
-      user: { client_user_id: "budgetpilot-user-1" },
-      client_name: "BudgetPilot",
+      user: { client_user_id: "meridianwallet-user-1" },
+      client_name: "MeridianWallet",
       products: [Products.Transactions],
       country_codes: PLAID_COUNTRY_CODES,
       language: "en",
@@ -1157,5 +1167,5 @@ app.get("*", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n  ◉ BudgetPilot running at http://localhost:${PORT}\n`);
+  console.log(`\n  ◉ MeridianWallet running at http://localhost:${PORT}\n`);
 });

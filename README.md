@@ -1,4 +1,4 @@
-# BudgetPilot
+# MeridianWallet
 
 Personal financial advisor that connects your bank accounts via Plaid, categorizes every transaction automatically, and gives you AI-powered budget advice via Claude.
 
@@ -13,7 +13,7 @@ Express Server (Node.js)
   └── Claude API → generates personalized financial insights
 ```
 
-All data stays on your machine in a local JSON file (`budgetpilot-data.json`). Nothing is sent to external servers except Plaid (for bank connections) and Anthropic (for AI analysis of aggregated spending categories — no raw transaction descriptions are sent).
+All data stays on your machine in a local JSON file (`meridianwallet-data.json`). Nothing is sent to external servers except Plaid (for bank connections) and Anthropic (for AI analysis of aggregated spending categories — no raw transaction descriptions are sent).
 
 ## Setup
 
@@ -31,7 +31,7 @@ All data stays on your machine in a local JSON file (`budgetpilot-data.json`). N
 
 ```bash
 # Clone or download this folder
-cd budgetpilot
+cd MeridianWallet
 
 # Install dependencies
 npm install

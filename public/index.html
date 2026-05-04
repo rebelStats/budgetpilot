@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BudgetPilot</title>
+<title>MeridianWallet</title>
 <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -113,7 +113,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
   <div class="logo">
     <div class="logo-icon">₿</div>
     <div>
-      <div class="logo-text">BudgetPilot</div>
+      <div class="logo-text">MeridianWallet</div>
       <div class="logo-sub" id="txn-count">No data loaded</div>
     </div>
   </div>
@@ -258,7 +258,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
   <div id="view-connect" class="hidden">
     <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;">Connect accounts</h2>
     <p style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">
-      Link your bank accounts through Plaid. Your credentials go directly to Plaid — BudgetPilot never sees your login info.
+      Link your bank accounts through Plaid. Your credentials go directly to Plaid — MeridianWallet never sees your login info.
     </p>
 
     <div class="connect-card" onclick="openPlaidLink()">
@@ -1010,7 +1010,16 @@ async function saveImport() {
 }
 
 // ---- Chat ----
-const CHAT_KEY = "budgetpilot.chat.v1";
+const CHAT_KEY = "meridianwallet.chat.v1";
+// One-time migration: copy chat history from the old key if present and the
+// new key isn't yet set. Idempotent.
+(function migrateChatKey() {
+  const legacy = "budgetpilot.chat.v1";
+  if (!localStorage.getItem(CHAT_KEY) && localStorage.getItem(legacy)) {
+    localStorage.setItem(CHAT_KEY, localStorage.getItem(legacy));
+    localStorage.removeItem(legacy);
+  }
+})();
 let chatHistory = JSON.parse(localStorage.getItem(CHAT_KEY) || "[]");
 
 function escapeHtml(s) {
