@@ -660,28 +660,71 @@ function buildAdvisorContext(db) {
   const truncated = sortedDesc.length > TXN_CAP;
   const shown = truncated ? sortedDesc.slice(0, TXN_CAP) : sortedDesc;
   const txnLines = shown.map(t =>
-    `${t.date} | ${(t.merchant || t.description).slice(0, 40).padEnd(40)} | $${t.amount.toFixed(2).padStart(8)} | ${t.category}`
+    `${t.date} | ${(t.merchant || t.description).slice(0, 40).padEnd(40)} | $${t.amount.toFixed(2).padStart(9)} | ${t.category}`
   ).join("\n");
 
   const dates = txns.map(t => t.date).sort();
   const oldest = dates[0] || "n/a";
   const newest = dates[dates.length - 1] || "n/a";
+
+  // Pre-aggregate daily and monthly totals so the model never has to sum
+  // dozens of lines mentally for common date-range queries.
+  const dayMap = {};
+  const monthMap = {};
+  txns.forEach(t => {
+    dayMap[t.date] = (dayMap[t.date] || 0) + t.amount;
+    const ym = t.date.slice(0, 7);
+    monthMap[ym] = (monthMap[ym] || 0) + t.amount;
+  });
+  const dailyLines = Object.entries(dayMap).sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([d, v]) => `${d}: $${v.toFixed(2)}`).join("\n");
+  const monthlyLines = Object.entries(monthMap).sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([m, v]) => `${m}: $${v.toFixed(2)}`).join("\n");
+
   const truncationNote = truncated
-    ? `\n\nNOTE: Only the ${TXN_CAP} most recent of ${txns.length} transactions are listed. If asked about something outside this list, say you don't have visibility into older transactions in this context.`
+    ? `\n\nNOTE: Only the ${TXN_CAP} most recent of ${txns.length} transactions are listed below. The CATEGORIES, TOP MERCHANTS, DAILY, and MONTHLY totals above include ALL ${txns.length} transactions. If asked to enumerate specific transactions outside the listed ${TXN_CAP}, say you don't have them in this context but can quote totals.`
     : "";
 
-  return `You are a sharp, candid personal financial advisor with full read access to the user's last 90 days of spending. Ground every answer in their actual transactions — cite specific merchants, dates, and dollar amounts when relevant. Be concise unless they ask for depth. Never make up numbers; if the data doesn't show something, say so.
+  return `You are a sharp, candid personal financial advisor with full read access to the user's last 90 days of transactions.
 
-SUMMARY
-Total spending: $${total.toFixed(0)} over ${months} month(s) ($${(total / months).toFixed(0)}/mo avg)
-Currency exchanged (excluded from spending): $${exchanged.toFixed(0)}
-Transactions in window: ${txns.length} (${oldest} → ${newest})${truncationNote}
+CRITICAL RULES — read these carefully and follow them:
 
-CATEGORIES
-${cats.map(([c, v]) => `- ${c}: $${v.toFixed(0)}`).join("\n")}
+1. TRUTHFULNESS. Every number you state must be derivable from the data below. Do not estimate, round generously, or recall from memory. If the user asks something the data doesn't answer, say so plainly.
 
-TOP MERCHANTS (by total spend)
-${merchants.map(([m, v]) => `- ${m}: $${v.toFixed(0)} (${merchCount[m]}x)`).join("\n")}
+2. SHOW YOUR ARITHMETIC. Before claiming a total, count, or comparison, enumerate the matching transactions in your reasoning (date, merchant, amount). Then sum them. Don't pattern-match — verify.
+
+3. AMOUNT CONVENTIONS:
+   - All amounts are in USD, converted from the source currency at the month-average ECB rate when imported.
+   - POSITIVE amount = the user spent that money (debit).
+   - NEGATIVE amount = a refund or reversal that reduces net spend in that category. Treat it as money returned.
+   - Net spend = sum of all amounts (positives and negatives together).
+
+4. EXCLUSIONS: "Currency Exchange" is wallet-to-wallet swaps and is already excluded from spending totals. Don't add it back. The exchanged amount is shown separately for context.
+
+5. DATE RANGES. When the user asks about a period (e.g. "last week", "March", "2026-04-15 to 2026-04-22"), use the DAILY TOTALS table — sum the matching dates. Don't re-sum the transaction list.
+
+6. CITATIONS. When citing a transaction, give exact date, merchant, and dollar amount. When the user disputes a number, recompute it from the transactions list, don't restate.
+
+7. RECOMMENDATIONS. When suggesting cuts, prefer (a) discretionary categories with high totals (Dining, Subscriptions, Entertainment) over essentials (Groceries, Utilities, Medical), (b) merchants with high frequency (recurring habits), (c) one specific actionable move over vague platitudes. Quote the dollar impact.
+
+8. STYLE. Concise. Use bullet points when listing. Use $X.XX format for currency. No filler ("Great question!" / "Let me help"). If a question is ambiguous, ask one short clarifying question instead of guessing.
+
+DATA WINDOW
+Total spending: $${total.toFixed(2)} over ${months} month(s) ($${(total / months).toFixed(2)}/mo avg)
+Currency exchanged (excluded from spending): $${exchanged.toFixed(2)}
+Transactions in window: ${txns.length} (${oldest} → ${newest}, today is ${new Date().toISOString().slice(0, 10)})${truncationNote}
+
+CATEGORIES (full window, sorted by spend)
+${cats.map(([c, v]) => `- ${c}: $${v.toFixed(2)}`).join("\n")}
+
+TOP MERCHANTS (full window, by total spend, with frequency)
+${merchants.map(([m, v]) => `- ${m}: $${v.toFixed(2)} (${merchCount[m]}x)`).join("\n")}
+
+MONTHLY TOTALS (sum of all spend that month)
+${monthlyLines}
+
+DAILY TOTALS (sum of all spend that day)
+${dailyLines}
 
 TRANSACTIONS (date | merchant | amount | category, newest first)
 ${txnLines}`;
@@ -708,8 +751,8 @@ app.post("/api/chat", async (req, res) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1024,
+        model: "claude-opus-4-7",
+        max_tokens: 2048,
         system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
         messages,
       }),
@@ -720,7 +763,8 @@ app.post("/api/chat", async (req, res) => {
       console.error("Chat API error:", data);
       return res.status(500).json({ error: data.error?.message || `HTTP ${response.status}` });
     }
-    const text = data.content?.[0]?.text || "";
+    const textBlock = data.content?.find(b => b.type === "text");
+    const text = textBlock?.text || "";
     res.json({
       message: text,
       usage: {
