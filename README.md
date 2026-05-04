@@ -88,6 +88,10 @@ By default the institution picker shows US banks only. To connect banks in other
 - **Frontend**: Vanilla HTML/CSS/JS, Chart.js, Plaid Link
 - **Storage**: Local JSON file (zero deps, no setup)
 
+## Privacy
+
+See [PRIVACY.md](PRIVACY.md) for what data the app handles, where it's stored, and what gets sent to third parties (Plaid, Anthropic, Frankfurter).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
