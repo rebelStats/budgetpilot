@@ -244,17 +244,35 @@ app.post("/api/plaid/exchange-token", async (req, res) => {
   }
 });
 
-// Plaid's category data identifies non-spend items we should skip even when
-// they appear as credits on the account (salary, transfers in, etc.).
+// Identifies non-spend credits we should skip even when Plaid sends them as
+// negative-amount transactions. Includes income, transfers in, and credit-card
+// payments (paying off a card balance is just moving money — neither spending
+// nor a refund).
 function isPlaidIncomeOrTransferIn(t) {
   const cats = (t.category || []).join(" ").toLowerCase();
-  if (/payroll|salary|interest earned|deposit|reimbursement|tax refund/i.test(cats)) {
-    // Tax refunds are conceptually income, not spending refunds — treat as income.
-    return /payroll|salary|interest earned|deposit|tax refund/i.test(cats);
-  }
+  if (/payroll|salary|interest earned|deposit|tax refund/i.test(cats)) return true;
+  // Credit-card payments: legacy ["Payment", "Credit Card"]
+  if (/payment/i.test(cats) && /credit card/i.test(cats)) return true;
+
   const pfc = t.personal_finance_category?.primary;
+  const pfcDetail = t.personal_finance_category?.detailed;
   if (pfc === "INCOME" || pfc === "TRANSFER_IN") return true;
+  if (pfcDetail === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT") return true;
+
+  // Description-based fallback for institutions whose PFC tagging is unreliable.
+  const text = `${t.name || ""} ${t.merchant_name || ""}`;
+  if (/online pymt|online payment|card payment|autopay payment|thank you for your payment|capital one.*(pymt|payment)/i.test(text)) return true;
+
   return false;
+}
+
+// True when an EXISTING stored transaction looks like a credit-card payment
+// rather than a real refund. Used by the cleanup endpoint and the startup
+// sweep to retroactively remove these from the local DB.
+function isStoredCreditCardPayment(t) {
+  if (t.amount >= 0) return false;
+  const text = `${t.description || ""} ${t.merchant || ""}`;
+  return /online pymt|online payment|card payment|autopay payment|thank you for your payment|capital one.*(pymt|payment)/i.test(text);
 }
 
 app.post("/api/plaid/sync-transactions", async (req, res) => {
@@ -434,6 +452,25 @@ app.post("/api/overrides", (req, res) => {
   } catch (err) {
     console.error("Override error:", err);
     res.status(500).json({ error: "Failed to update override" });
+  }
+});
+
+app.post("/api/cleanup-credit-card-payments", (req, res) => {
+  try {
+    const db = loadDB();
+    const before = db.transactions.length;
+    const removed = db.transactions.filter(isStoredCreditCardPayment);
+    db.transactions = db.transactions.filter(t => !isStoredCreditCardPayment(t));
+    saveDB(db);
+    res.json({
+      removed: removed.length,
+      total: before,
+      remaining: db.transactions.length,
+      sample: removed.slice(0, 5).map(t => ({ date: t.date, merchant: t.merchant, amount: t.amount })),
+    });
+  } catch (err) {
+    console.error("Cleanup error:", err);
+    res.status(500).json({ error: "Cleanup failed" });
   }
 });
 
