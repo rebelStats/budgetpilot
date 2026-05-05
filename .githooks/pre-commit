@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Pre-commit guard: refuse to stage anything that smells like a secret or
+# user data. Runs locally before every `git commit` once the hook is
+# enabled (`git config core.hooksPath .githooks`).
+
+set -euo pipefail
+
+# BSD grep (macOS) doesn't support -P, so this uses POSIX/extended regex only.
+# The .gitignore is the first line of defense; this is a second.
+forbidden_pattern='(^|/)\.env$|(^|/).*\.bak$|(^|/).*\.bak\..*|(^|/)meridianwallet-data\.json|(^|/)budgetpilot-data\.json|(^|/)\.DS_Store$|^certs/'
+
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E "$forbidden_pattern" || true)
+
+if [[ -n "$staged" ]]; then
+  echo "" >&2
+  echo "✗ Pre-commit guard: refusing to commit forbidden paths." >&2
+  echo "" >&2
+  echo "$staged" | sed 's/^/    /' >&2
+  echo "" >&2
+  echo "  These paths look like secrets or user data. If you genuinely need to" >&2
+  echo "  commit one of them, bypass with:  git commit --no-verify" >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0

@@ -1,6 +1,13 @@
 node_modules/
 .env
+.env.*
+!.env.example
 budgetpilot.db
 budgetpilot-data.json
+budgetpilot-data.json.*
 meridianwallet-data.json
+meridianwallet-data.json.*
+*.bak
+*.bak.*
 .DS_Store
+certs/

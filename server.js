@@ -12,36 +12,10 @@ app.use(express.json({ limit: "20mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---------------------------------------------------------------------------
-// JSON file storage (zero native deps)
+// JSON file storage — extracted to lib/db.js, including the connection schema
+// migration (legacy accounts with access_tokens become plaid_legacy connections).
 // ---------------------------------------------------------------------------
-const DB_PATH = path.join(__dirname, "meridianwallet-data.json");
-const LEGACY_DB_PATH = path.join(__dirname, "budgetpilot-data.json");
-
-// One-time migration: if the new file doesn't exist but the legacy one does,
-// rename it. Idempotent — safe to run on every startup.
-(function migrateDbFilename() {
-  if (!fs.existsSync(DB_PATH) && fs.existsSync(LEGACY_DB_PATH)) {
-    fs.renameSync(LEGACY_DB_PATH, DB_PATH);
-    console.log(`  Migrated data file: budgetpilot-data.json → meridianwallet-data.json`);
-  }
-})();
-
-function loadDB() {
-  try {
-    if (fs.existsSync(DB_PATH)) {
-      const data = JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
-      if (!data.merchantCache) data.merchantCache = {};
-      if (!data.merchantOverrides) data.merchantOverrides = {};
-      if (!data.exchangeRatesByMonth) data.exchangeRatesByMonth = {};
-      return data;
-    }
-  } catch { }
-  return { accounts: [], transactions: [], merchantCache: {}, merchantOverrides: {}, exchangeRatesByMonth: {} };
-}
-
-function saveDB(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
-}
+const { loadDB, saveDB, DB_PATH } = require("./lib/db");
 
 // ---------------------------------------------------------------------------
 // Category mapping: regex fast path → AI classifier (cached) → "Other"
