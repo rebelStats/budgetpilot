@@ -1,44 +1,51 @@
 # MeridianWallet
 
-Personal financial advisor that connects your bank accounts via Plaid, categorizes every transaction automatically, and gives you AI-powered budget advice via Claude.
+Personal finance dashboard that connects your bank accounts via Teller (US) — with GoCardless (EU) planned — categorizes every transaction automatically, converts foreign-currency charges to USD using monthly-average ECB rates, and surfaces spending insights through a Claude-powered AI advisor.
 
 ## Architecture
 
 ```
-Browser (Plaid Link + Dashboard)
+Browser (Teller Connect + Dashboard)
   ↕
 Express Server (Node.js)
-  ├── Plaid API → pulls transactions from your banks
-  ├── Local JSON file → stores transaction data
-  └── Claude API → generates personalized financial insights
+  ├── lib/providers/teller.js  → fetches transactions via mTLS REST API
+  ├── lib/providers/gocardless.js → planned for EU/PSD2 (stubbed)
+  ├── lib/db.js                → JSON file storage (single-user local)
+  └── Claude API               → categorization (Haiku) + advisor chat (Opus)
 ```
 
-All data stays on your machine in a local JSON file (`meridianwallet-data.json`). Nothing is sent to external servers except Plaid (for bank connections) and Anthropic (for AI analysis of aggregated spending categories — no raw transaction descriptions are sent).
+All data stays on your machine in a local JSON file (`meridianwallet-data.json`). Outbound network calls go to: Teller (`api.teller.io`) for bank data, Anthropic (`api.anthropic.com`) for AI categorization and chat, and Frankfurter (`api.frankfurter.app`) for ECB exchange rates. Nothing else.
 
 ## Setup
 
-### 1. Get API keys
+### 1. Sign up for Teller and download mTLS certs
 
-**Plaid** (free for development):
-1. Sign up at [dashboard.plaid.com](https://dashboard.plaid.com)
-2. Copy your `client_id` and `sandbox` secret from the Keys page
-3. When ready for real bank connections, apply for Production access
+1. Sign up at [teller.io](https://teller.io) and create an application
+2. From the dashboard, generate a Teller Application Certificate (development tier is free, capped at ~100 connected accounts, no commercial agreement)
+3. Download the `cert.pem` and `key.pem` files
 
-**Anthropic** (for AI insights):
-1. Get an API key at [console.anthropic.com](https://console.anthropic.com/settings/keys)
+### 2. Get an Anthropic API key
 
-### 2. Install & run
+Get an API key at [console.anthropic.com](https://console.anthropic.com/settings/keys).
+
+### 3. Install & run
 
 ```bash
 # Clone or download this folder
+git clone https://github.com/rebelStats/MeridianWallet.git
 cd MeridianWallet
 
-# Install dependencies
+# Install dependencies (also wires up the pre-commit secret guard)
 npm install
 
-# Create your .env file
+# Drop your Teller certs into ./certs/ (gitignored)
+mkdir -p certs
+mv ~/Downloads/cert.pem ./certs/teller-cert.pem
+mv ~/Downloads/key.pem  ./certs/teller-key.pem
+
+# Create your .env from the template and paste in your credentials
 cp .env.example .env
-# Edit .env and paste in your API keys
+# Then edit .env: TELLER_APPLICATION_ID, TELLER_ENVIRONMENT, ANTHROPIC_API_KEY
 
 # Start the server
 npm start
@@ -46,51 +53,54 @@ npm start
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 3. Connect your banks
+### 4. Connect your banks
 
 1. Click **Connect** in the nav
-2. Click the connect card — Plaid Link opens
+2. Click the connect card — Teller Connect opens
 3. Search for your bank and log in
-4. Click **Sync transactions** to pull the last 90 days
+4. Click **Sync transactions** to pull the last 365 days
 5. Go to **Dashboard** to see your spending breakdown
 
-By default the institution picker shows US banks only. To connect banks in other countries, set `PLAID_COUNTRY_CODES` in `.env` to a comma-separated list of ISO codes — e.g. `US,GB,IE,FR`. Plaid currently supports: US, CA, GB, IE, FR, ES, NL, DE, IT, PL, DK, NO, SE, EE, LT, LV, PT, BE.
+You can also import CSV/PDF statements (e.g. Revolut Poland statements) via the import flow — they're parsed by Claude Haiku, currency-converted using monthly-average ECB rates, and deduped against existing data.
 
-## Plaid environments
+## Teller environments
 
 | Environment | Use case | Real banks? |
 |-------------|----------|-------------|
 | `sandbox` | Testing with fake data | No — uses test credentials |
-| `development` | Testing with real banks (100 items free) | Yes |
-| `production` | Full production use | Yes — requires Plaid approval |
+| `development` | Real banks, capped at ~100 connected accounts, free | Yes |
+| `production` | Paid commercial tier | Yes — requires Teller approval |
 
-**To test immediately**: leave `PLAID_ENV=sandbox` and use these test credentials in Plaid Link:
-- Username: `user_good`
-- Password: `pass_good`
+For most personal use cases, **`development`** is the right tier.
 
-**To connect real accounts**: change to `PLAID_ENV=development`, update `PLAID_SECRET` to your development secret, and link your actual Capital One / Revolut accounts.
+## EU bank coverage (planned)
+
+GoCardless Bank Account Data (PSD2 Open Banking) is stubbed in `lib/providers/gocardless.js` and will be wired in when EU users come online. The provider abstraction means it slots in alongside Teller without rewriting any other layer.
 
 ## Features
 
 - **Multi-bank dashboard**: all your connected accounts in one view
-- **Auto-categorization**: Transactions sorted into 14 spending categories
-- **Weekly trend chart**: Visual spending spikes with over-budget flags
-- **Recurring merchant tracking**: Identifies habits by frequency + total spend
-- **AI advisor**: Claude analyzes your patterns and gives specific budget advice
+- **Auto-categorization**: regex-first, AI-fallback, manual override per-merchant
+- **Weekly trend chart**: clickable bars drill into Transactions tab with date filter pre-set
+- **Recurring merchant tracking**: identifies habits by frequency + total spend
+- **AI advisor chat**: Claude Opus 4.7 analyzes your last 90 days with daily/monthly subtotals
+- **Multi-currency import**: CSV/PDF statements parsed by Haiku, USD conversion via monthly-average ECB rates
+- **Refund handling**: refunds tracked as negative amounts that reduce net spend
+- **Cross-source dedup**: importing data that overlaps existing records doesn't double-count
 - **Local storage**: JSON file — your financial data never leaves your machine
-- **Transaction browser**: Searchable list across all connected accounts
 
 ## Tech stack
 
 - **Backend**: Node.js, Express
-- **Bank integration**: Plaid Node SDK
-- **AI**: Anthropic Claude API (Sonnet 4.6)
-- **Frontend**: Vanilla HTML/CSS/JS, Chart.js, Plaid Link
+- **Bank integration**: Teller (REST + mTLS)
+- **AI**: Anthropic Claude API (Haiku for categorization, Opus for chat)
+- **FX**: Frankfurter (ECB rates)
+- **Frontend**: Vanilla HTML/CSS/JS, Chart.js, Teller Connect SDK
 - **Storage**: Local JSON file (zero deps, no setup)
 
 ## Privacy
 
-See [PRIVACY.md](PRIVACY.md) for what data the app handles, where it's stored, and what gets sent to third parties (Plaid, Anthropic, Frankfurter).
+See [PRIVACY.md](PRIVACY.md) for what data the app handles, where it's stored, and what gets sent to third parties (Teller, Anthropic, Frankfurter).
 
 ## License
 

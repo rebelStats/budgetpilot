@@ -4,17 +4,19 @@
 
 ## What MeridianWallet is
 
-MeridianWallet is an open-source personal finance dashboard that runs entirely on a single user's local machine. It connects to bank accounts via Plaid, parses uploaded statement files (CSV/PDF), categorizes transactions, and surfaces spending insights through a Claude-powered AI advisor.
+MeridianWallet is an open-source personal finance dashboard that runs entirely on a single user's local machine. It connects to bank accounts via Teller (US), parses uploaded statement files (CSV/PDF), categorizes transactions, and surfaces spending insights through a Claude-powered AI advisor. GoCardless Bank Account Data (EU/PSD2) is planned as an additional provider; the codebase contains a stub adapter pending implementation.
 
 The application is intended for personal use by an individual operator. The operator and the data subject are the same person. There is no public deployment, no shared backend, and no other end users.
 
 ## What data MeridianWallet handles
 
-When the operator connects a bank account via Plaid, MeridianWallet receives:
+When the operator connects a bank account via Teller, MeridianWallet receives:
 
-- Account metadata (institution name, account name, account type, masked account ID)
-- Plaid access tokens (used to fetch transactions on subsequent syncs)
-- Transactions (date, amount, merchant name, description, category, currency)
+- Account metadata (institution name, account name, account type, masked account ID, currency)
+- Teller access tokens (used to fetch transactions on subsequent syncs)
+- Transactions (date, amount, merchant name, description, type, currency)
+
+A small number of historical accounts and transactions may exist as `plaid_legacy` records — these were imported from a previous Plaid integration and are now read-only. The Plaid SDK has been removed; no new outbound calls are made to Plaid.
 
 When the operator uploads a CSV or PDF statement, MeridianWallet receives the contents of that file and extracts equivalent transaction records.
 
@@ -23,7 +25,8 @@ When the operator uploads a CSV or PDF statement, MeridianWallet receives the co
 All data is stored exclusively on the operator's local machine in two files:
 
 - `meridianwallet-data.json` — accounts, transactions, merchant cache, manual category overrides, monthly exchange-rate cache.
-- `.env` — Plaid and Anthropic API credentials. Never committed to source control.
+- `.env` — Teller application ID and Anthropic API credentials. Never committed to source control. A pre-commit hook in `.githooks/` plus a tightened `.gitignore` prevent the file from being staged accidentally.
+- `certs/` — Teller mTLS client certificate and key files. Gitignored; never leaves the operator's disk.
 
 Encryption at rest is provided by the operator's OS-level full-disk encryption (FileVault, BitLocker, or LUKS). The application does not apply additional encryption beyond what the filesystem provides.
 
@@ -33,9 +36,11 @@ The application server binds to `localhost` only and is not exposed to any netwo
 
 MeridianWallet makes outbound network requests to exactly three external services, all over HTTPS:
 
-1. **Plaid** (`api.plaid.com`) — to retrieve transactions from connected bank accounts. Plaid's privacy policy: <https://plaid.com/legal/>.
+1. **Teller** (`api.teller.io`) — to retrieve transactions from connected US bank accounts. Authentication is mTLS-mutual: every request carries a client certificate plus the per-enrollment access token. Teller's privacy policy: <https://teller.io/about/privacy>.
 2. **Anthropic** (`api.anthropic.com`) — for transaction categorization (Claude Haiku) and the AI advisor chat (Claude Opus). Merchant names, transaction amounts, dates, and categories are sent as part of the model context. Account numbers and access tokens are never sent. Anthropic's privacy policy: <https://www.anthropic.com/legal/privacy>.
 3. **Frankfurter** (`api.frankfurter.app`) — for European Central Bank exchange rates used to convert non-USD transactions. No personal data is sent; only date ranges and currency codes.
+
+Future provider: **GoCardless Bank Account Data** (`bankaccountdata.gocardless.com`) for EU bank connections under PSD2 Open Banking. Not currently active; will be added when EU users come online. GoCardless's privacy policy: <https://gocardless.com/privacy/>.
 
 ## What MeridianWallet does NOT do
 
@@ -50,7 +55,7 @@ MeridianWallet makes outbound network requests to exactly three external service
 
 - **Retention:** Indefinite by default and entirely under the operator's control.
 - **Local deletion:** The operator can delete `meridianwallet-data.json` at any time. This removes all transactions, accounts, access tokens, merchant cache, category overrides, and chat history.
-- **Per-account deletion:** The application exposes a `DELETE /api/accounts/:id` endpoint that removes a single account, deletes its transactions, and — if no other accounts share its Plaid Item — calls Plaid's `/item/remove` to revoke the upstream connection.
+- **Per-account deletion:** The application exposes a `DELETE /api/accounts/:id` endpoint that removes a single account, deletes its transactions, and — if no other accounts share its connection — calls the provider's disconnect to revoke the upstream credentials. A `DELETE /api/connections/:id` endpoint does the same at the connection level.
 - **Per-transaction deletion:** Individual transactions are not deletable through the UI; the operator can edit `meridianwallet-data.json` directly if needed.
 - **Chat history:** Stored in browser `localStorage` under the key `meridianwallet.chat.v1`. The operator can clear it from within the AI Advisor view ("Clear chat") or by clearing browser storage for `localhost`.
 
@@ -60,7 +65,8 @@ Because MeridianWallet is single-user and locally hosted, the operator is respon
 
 - Securing the device on which the application runs (OS-level authentication, full-disk encryption).
 - Keeping the `.env` file private and not committing it to source control (the included `.gitignore` already excludes it).
-- Rotating Plaid and Anthropic API credentials if the operator believes they may have been exposed.
+- Rotating Teller and Anthropic API credentials if the operator believes they may have been exposed.
+- Re-issuing Teller mTLS certificates from the Teller dashboard if the cert files are lost or copied.
 
 ## Changes to this policy
 
