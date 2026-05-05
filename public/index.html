@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MeridianWallet</title>
 <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script src="https://cdn.teller.io/connect/connect.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -322,7 +323,96 @@ function showView(id) {
   if (id === "connect") loadAccounts();
 }
 
-// ---- Plaid Link ----
+// ---- Generic Connect (provider-agnostic) ----
+// Phase 3: opens whichever provider the caller specifies. Teller uses a modal
+// (in-place callback); GoCardless will use a redirect. Both finish by POSTing
+// the success payload to /api/connect/complete.
+async function openConnect(provider) {
+  try {
+    const resp = await fetch("/api/connect/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    });
+    const init = await resp.json();
+    if (!resp.ok || init.error) {
+      alert("Could not start Connect: " + (init.error || resp.statusText));
+      return;
+    }
+
+    if (init.flowType === "modal" && provider === "teller") {
+      if (typeof TellerConnect === "undefined") {
+        alert("Teller Connect SDK didn't load. Check your network and reload the page.");
+        return;
+      }
+      const tc = TellerConnect.setup({
+        applicationId: init.payload.applicationId,
+        environment: init.payload.environment,
+        onInit: () => {},
+        onSuccess: async (enrollment) => {
+          // Teller's onSuccess callback shape:
+          //   { accessToken, user, enrollment: { id, institution: { name } }, signatures }
+          try {
+            const completeResp = await fetch("/api/connect/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                provider: "teller",
+                callback: enrollment,
+              }),
+            });
+            const result = await completeResp.json();
+            if (!completeResp.ok || result.error) throw new Error(result.error || "Connect complete failed");
+
+            document.getElementById("sync-status").innerHTML =
+              `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
+                Connected ${result.accounts.length} account(s) via ${provider}. Syncing transactions…
+              </div>`;
+            await runSync();
+            loadAccounts();
+          } catch (err) {
+            console.error("Teller completeConnect failed:", err);
+            document.getElementById("sync-status").innerHTML =
+              `<div style="padding:12px;color:var(--red);font-size:14px;">Connect failed: ${escapeHtml(err.message)}</div>`;
+          }
+        },
+        onExit: () => {},
+        onFailure: (failure) => {
+          console.error("Teller onFailure:", failure);
+          alert("Teller Connect failed: " + (failure?.message || "see console"));
+        },
+      });
+      tc.open();
+    } else if (init.flowType === "redirect") {
+      // Future: GoCardless. The redirect target completes the OAuth flow then
+      // returns to /api/connect/callback which finalizes the connection.
+      window.location.href = init.payload.authorizationUrl;
+    } else {
+      alert(`Provider "${provider}" returned an unsupported flowType "${init.flowType}".`);
+    }
+  } catch (err) {
+    console.error(err);
+    alert("Could not open Connect. Check the server is running and the provider is configured.");
+  }
+}
+
+async function runSync() {
+  try {
+    const resp = await fetch("/api/sync", { method: "POST" });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || "Sync failed");
+    document.getElementById("sync-status").innerHTML =
+      `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
+        Synced ${data.added} new transactions${data.aiClassified ? ` · ${data.aiClassified} AI-classified` : ''}
+      </div>`;
+    document.getElementById("txn-count").textContent = data.total + " transactions loaded";
+  } catch (err) {
+    document.getElementById("sync-status").innerHTML =
+      `<div style="padding:12px;color:var(--red);font-size:14px;">Sync failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// ---- Plaid Link (legacy — Phase 4 will remove the UI entry point) ----
 async function openPlaidLink() {
   try {
     const resp = await fetch("/api/plaid/create-link-token", { method: "POST" });
