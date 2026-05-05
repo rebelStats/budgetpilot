@@ -386,6 +386,8 @@ async function openConnect(provider) {
           // Teller's onSuccess callback shape:
           //   { accessToken, user, enrollment: { id, institution: { name } }, signatures }
           try {
+            document.getElementById("sync-status").innerHTML =
+              `<div style="padding:12px;color:var(--muted);font-size:14px;"><span class="spinner"></span> Importing accounts from ${escapeHtml(enrollment.enrollment?.institution?.name || provider)}…</div>`;
             const completeResp = await fetch("/api/connect/complete", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -398,10 +400,11 @@ async function openConnect(provider) {
             if (!completeResp.ok || result.error) throw new Error(result.error || "Connect complete failed");
 
             document.getElementById("sync-status").innerHTML =
-              `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
-                Connected ${result.accounts.length} account(s) via ${provider}. Syncing transactions…
+              `<div style="padding:12px 16px;border-radius:8px;background:rgba(99,102,241,0.12);color:var(--accent-l);font-size:14px;">
+                Imported ${result.accounts.length} account(s). Review and assign each one a name and type to start syncing.
               </div>`;
-            await runSync();
+            // Pending accounts must be reviewed before any transactions sync.
+            openAccountReviewModal(result.accounts);
             loadAccounts();
           } catch (err) {
             console.error("Teller completeConnect failed:", err);
@@ -430,18 +433,128 @@ async function openConnect(provider) {
 }
 
 async function runSync() {
+  const status = document.getElementById("sync-status");
+  status.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:14px;"><span class="spinner"></span> Syncing transactions…</div>`;
   try {
     const resp = await fetch("/api/sync", { method: "POST" });
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || "Sync failed");
-    document.getElementById("sync-status").innerHTML =
+    status.innerHTML =
       `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
         Synced ${data.added} new transactions${data.aiClassified ? ` · ${data.aiClassified} AI-classified` : ''}
       </div>`;
     document.getElementById("txn-count").textContent = data.total + " transactions loaded";
   } catch (err) {
-    document.getElementById("sync-status").innerHTML =
+    status.innerHTML =
       `<div style="padding:12px;color:var(--red);font-size:14px;">Sync failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// ---- Account review modal (shown after Connect for pending accounts) ----
+let ACCOUNT_TYPE_LABELS = {
+  credit_card: "Credit Card",
+  checking: "Checking",
+  savings: "Savings",
+  loan_mortgage: "Loan / Mortgage",
+  investment: "Investment",
+};
+async function loadAccountTypes() {
+  try {
+    const resp = await fetch("/api/account-types");
+    const data = await resp.json();
+    if (data.types && data.labels) ACCOUNT_TYPE_LABELS = data.labels;
+  } catch {}
+}
+
+// Map provider's raw type string to our canonical type as a sensible default.
+function guessAccountType(providerType) {
+  const t = (providerType || "").toLowerCase();
+  if (t.includes("credit")) return "credit_card";
+  if (t === "checking" || t.includes("checking")) return "checking";
+  if (t === "savings" || t.includes("savings")) return "savings";
+  if (t.includes("loan") || t.includes("mortgage")) return "loan_mortgage";
+  if (t.includes("invest") || t.includes("brokerage")) return "investment";
+  return "";
+}
+
+function openAccountReviewModal(accounts) {
+  const overlay = document.getElementById("account-review-overlay");
+  const body = document.getElementById("account-review-body");
+  body.dataset.pending = JSON.stringify(accounts.map(a => a.id));
+
+  body.innerHTML = accounts.map((a, i) => {
+    const guess = guessAccountType(a.account_type_provider);
+    const opts = Object.entries(ACCOUNT_TYPE_LABELS).map(([k, label]) =>
+      `<option value="${k}"${k === guess ? ' selected' : ''}>${label}</option>`).join("");
+    const maskBit = a.mask ? ` ····${a.mask}` : "";
+    return `
+      <div class="acct-review-row" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:10px;">
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px;">From provider: <span class="mono">${escapeHtml(a.account_type_provider || "?")}${maskBit}</span> · ${escapeHtml(a.currency || "USD")}</div>
+        <div style="display:grid;grid-template-columns:1fr 200px;gap:10px;">
+          <div>
+            <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Name</label>
+            <input data-field="name" data-id="${a.id}" type="text" value="${escapeHtml(a.account_name || '')}"
+                   style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;font-family:inherit;outline:none;margin-top:4px;">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Type</label>
+            <select data-field="type" data-id="${a.id}"
+                    style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;font-family:inherit;outline:none;margin-top:4px;">
+              <option value="">— select —</option>
+              ${opts}
+            </select>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  overlay.style.display = "flex";
+}
+
+function closeAccountReviewModal() {
+  document.getElementById("account-review-overlay").style.display = "none";
+}
+
+async function submitAccountReview() {
+  const body = document.getElementById("account-review-body");
+  const ids = JSON.parse(body.dataset.pending || "[]");
+  const btn = document.getElementById("account-review-submit");
+
+  // Gather entries
+  const entries = ids.map(id => {
+    const nameInput = body.querySelector(`input[data-id="${id}"][data-field="name"]`);
+    const typeSelect = body.querySelector(`select[data-id="${id}"][data-field="type"]`);
+    return { id, name: nameInput?.value.trim(), type: typeSelect?.value };
+  });
+
+  const missing = entries.find(e => !e.name || !e.type);
+  if (missing) {
+    alert("Every account needs a name and a type before you can save.");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Saving…';
+  try {
+    for (const e of entries) {
+      const r = await fetch(`/api/accounts/${encodeURIComponent(e.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_name: e.name, account_type: e.type, status: "active" }),
+      });
+      if (!r.ok) throw new Error(`Failed to update account ${e.id}`);
+    }
+    closeAccountReviewModal();
+    document.getElementById("sync-status").innerHTML =
+      `<div style="padding:12px;color:var(--muted);font-size:14px;"><span class="spinner"></span> Accounts activated. Fetching transactions…</div>`;
+    await runSync();
+    loadAccounts();
+    if (currentView === "dashboard") loadDashboard();
+  } catch (err) {
+    alert("Activation failed: " + err.message);
+    btn.disabled = false;
+    btn.innerHTML = "Save and sync";
   }
 }
 
@@ -453,18 +566,47 @@ async function loadAccounts() {
     const accounts = await resp.json();
     const el = document.getElementById("account-list");
     if (!accounts.length) { el.innerHTML = '<p style="color:var(--dim);font-size:13px;">No accounts connected yet</p>'; return; }
-    el.innerHTML = accounts.map(a => `
-      <div class="account-pill" style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-        <div>
-          <span style="font-weight:500;">${a.institution_name}</span>
-          <span style="color:var(--muted);font-size:13px;margin-left:8px;">${a.account_name} (${a.account_type})</span>
+
+    const pending = accounts.filter(a => a.status === "pending");
+    el.innerHTML = accounts.map(a => {
+      const isPending = a.status === "pending";
+      const typeLabel = ACCOUNT_TYPE_LABELS[a.account_type] || a.account_type || "—";
+      const pendingBadge = isPending
+        ? `<span class="badge" style="background:rgba(245,158,11,0.15);color:var(--amber);border:1px solid rgba(245,158,11,0.4);font-size:10px;margin-left:8px;">NEEDS SETUP</span>`
+        : "";
+      const setupBtn = isPending
+        ? `<button onclick="resumeAccountSetup()" style="background:var(--accent);border:1px solid var(--accent);color:#fff;padding:4px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500;" title="Set name + type">Set up</button>`
+        : "";
+      return `
+        <div class="account-pill" style="display:flex;justify-content:space-between;align-items:center;gap:12px;${isPending ? 'border-color:rgba(245,158,11,0.4);background:rgba(245,158,11,0.04);' : ''}">
+          <div>
+            <span style="font-weight:500;">${escapeHtml(a.institution_name || '')}</span>
+            <span style="color:var(--muted);font-size:13px;margin-left:8px;">${escapeHtml(a.account_name || '')} (${escapeHtml(typeLabel)})</span>
+            ${pendingBadge}
+          </div>
+          <div style="display:flex;gap:6px;">
+            ${setupBtn}
+            <button onclick="removeAccount('${a.id}', '${(a.account_name || '').replace(/'/g, "\\'")}')"
+                    style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:6px;font-size:12px;cursor:pointer;"
+                    title="Remove account">✕ Remove</button>
+          </div>
         </div>
-        <button onclick="removeAccount('${a.id}', '${(a.account_name || '').replace(/'/g, "\\'")}')"
-                style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:6px;font-size:12px;cursor:pointer;"
-                title="Remove account">✕ Remove</button>
-      </div>
-    `).join("");
+      `;
+    }).join("");
   } catch {}
+}
+
+// Re-open the review modal for any accounts still in pending state.
+async function resumeAccountSetup() {
+  const resp = await fetch("/api/accounts");
+  const accounts = await resp.json();
+  const pending = accounts.filter(a => a.status === "pending");
+  if (!pending.length) {
+    alert("No pending accounts to set up.");
+    loadAccounts();
+    return;
+  }
+  openAccountReviewModal(pending);
 }
 
 async function recategorize() {
@@ -1261,8 +1403,24 @@ document.querySelectorAll(".txn-sort-btn").forEach(b => {
   b.addEventListener("click", () => setTxnSort(b.dataset.sort));
 });
 renderChat();
+loadAccountTypes();
 loadDashboard();
 loadAccounts();
 </script>
+
+<!-- Account review modal (shown after Connect; pending accounts must be activated here before transactions sync) -->
+<div id="account-review-overlay" style="display:none;position:fixed;inset:0;background:rgba(8,12,20,0.78);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:640px;width:100%;max-height:90vh;display:flex;flex-direction:column;">
+    <div style="margin-bottom:18px;">
+      <h2 style="font-size:20px;font-weight:600;margin-bottom:4px;">Set up your accounts</h2>
+      <p style="color:var(--muted);font-size:13px;">Give each account a name and pick its type. Until you save, transactions won't sync and the dashboard won't show them.</p>
+    </div>
+    <div id="account-review-body" style="overflow-y:auto;flex:1;margin-bottom:18px;"></div>
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <button class="btn btn-outline" onclick="closeAccountReviewModal()">Skip for now</button>
+      <button id="account-review-submit" class="btn btn-primary" onclick="submitAccountReview()">Save and sync</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

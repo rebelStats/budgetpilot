@@ -208,17 +208,22 @@ app.post("/api/connect/complete", async (req, res) => {
     };
     db.connections.push(connection);
 
-    // Discover accounts under this new connection and store them.
+    // Discover accounts under this new connection and store them as PENDING.
+    // The user must assign a friendly name + canonical type via PATCH /api/accounts/:id
+    // (or the review modal in the UI) before transactions are synced and the
+    // accounts appear on the dashboard.
     const providerAccounts = await adapter.listAccounts(connection);
     const newAccounts = providerAccounts.map(pa => ({
       id: "acct_" + crypto.randomBytes(8).toString("hex"),
       connection_id: connectionId,
       provider_account_id: pa.providerAccountId,
       institution_name: connection.institution_name,
-      account_name: pa.name,
-      account_type: pa.type,
+      account_name: pa.name,                  // default — user can rename
+      account_type: pa.type,                  // raw provider type — user picks canonical
+      account_type_provider: pa.type,         // immutable record of what the provider said
       currency: pa.currency || "USD",
       mask: pa.mask || null,
+      status: "pending",                      // ← user must review before activation
     }));
     db.accounts.push(...newAccounts);
     saveDB(db);
@@ -227,8 +232,8 @@ app.post("/api/connect/complete", async (req, res) => {
     const { credentials, ...safeConn } = connection;
     res.json({
       connection: safeConn,
-      accounts: newAccounts.map(({ id, account_name, account_type, mask, currency }) =>
-        ({ id, account_name, account_type, mask, currency })),
+      accounts: newAccounts.map(({ id, account_name, account_type, account_type_provider, mask, currency, status }) =>
+        ({ id, account_name, account_type, account_type_provider, mask, currency, status })),
     });
   } catch (err) {
     console.error("connect/complete error:", err.message);
@@ -322,6 +327,9 @@ app.post("/api/sync", async (req, res) => {
             console.error(`Sync: no account row for ${connection.provider} providerAccountId=${t.providerAccountId} on connection ${connection.id}`);
             continue;
           }
+          // Skip transactions that belong to accounts the user hasn't activated yet —
+          // these are still in the review queue and must not appear on the dashboard.
+          if (acct.status === "pending") continue;
 
           // Adapter-flagged transfers go straight into Transfers & Payments;
           // overrides win for everything else.
@@ -369,9 +377,56 @@ app.post("/api/sync", async (req, res) => {
 // Routes: Data queries
 // ---------------------------------------------------------------------------
 
+// Canonical account types the user picks during account review. Front-end
+// dropdown options also come from here.
+const ACCOUNT_TYPES = ["credit_card", "checking", "savings", "loan_mortgage", "investment"];
+
 app.get("/api/accounts", (req, res) => {
   const db = loadDB();
   res.json(db.accounts.map(({ access_token, ...rest }) => rest));
+});
+
+app.get("/api/account-types", (req, res) => {
+  res.json({
+    types: ACCOUNT_TYPES,
+    labels: {
+      credit_card: "Credit Card",
+      checking: "Checking",
+      savings: "Savings",
+      loan_mortgage: "Loan / Mortgage",
+      investment: "Investment",
+    },
+  });
+});
+
+// Update an account row. Used to assign a user-chosen name + canonical type and
+// flip status from "pending" → "active" once the user reviews newly imported
+// accounts. Body: { account_name?, account_type?, status? }.
+app.patch("/api/accounts/:id", (req, res) => {
+  try {
+    const { account_name, account_type, status } = req.body || {};
+    const db = loadDB();
+    const acct = db.accounts.find(a => a.id === req.params.id);
+    if (!acct) return res.status(404).json({ error: "Account not found" });
+
+    if (typeof account_name === "string" && account_name.trim()) {
+      acct.account_name = account_name.trim().slice(0, 100);
+    }
+    if (typeof account_type === "string" && account_type.trim()) {
+      if (!ACCOUNT_TYPES.includes(account_type)) {
+        return res.status(400).json({ error: `Unknown account_type. Allowed: ${ACCOUNT_TYPES.join(", ")}` });
+      }
+      acct.account_type = account_type;
+    }
+    if (typeof status === "string" && (status === "active" || status === "pending")) {
+      acct.status = status;
+    }
+    saveDB(db);
+    res.json({ id: acct.id, account_name: acct.account_name, account_type: acct.account_type, status: acct.status });
+  } catch (err) {
+    console.error("PATCH /api/accounts error:", err.message);
+    res.status(500).json({ error: "Failed to update account" });
+  }
 });
 
 app.patch("/api/transactions/:id", (req, res) => {
@@ -556,12 +611,20 @@ app.delete("/api/accounts/:id", async (req, res) => {
   }
 });
 
+// Helper used by /api/transactions and /api/summary to drop transactions
+// belonging to accounts the user hasn't activated yet.
+function isFromActiveAccount(db, accountId) {
+  if (!accountId || String(accountId).startsWith("import:")) return true; // imports have no account row
+  const a = db.accounts.find(x => x.id === accountId);
+  return !a || a.status !== "pending";
+}
+
 app.get("/api/transactions", (req, res) => {
   const { days = 90, category, source } = req.query;
   const db = loadDB();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  let txns = db.transactions.filter(t => t.date >= cutoff);
+  let txns = db.transactions.filter(t => t.date >= cutoff && isFromActiveAccount(db, t.account_id));
   if (category) txns = txns.filter(t => t.category === category);
   if (source) txns = txns.filter(t => t.source === source);
 
@@ -572,7 +635,7 @@ app.get("/api/summary", (req, res) => {
   const { days = 90 } = req.query;
   const db = loadDB();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const allInWindow = db.transactions.filter(t => t.date >= cutoff);
+  const allInWindow = db.transactions.filter(t => t.date >= cutoff && isFromActiveAccount(db, t.account_id));
 
   // Money movement (FX, cash, transfers) — broken out for the dashboard widget
   // and the Transfers tab. Transfers are split by sign so the widget shows OUT
@@ -654,7 +717,7 @@ app.post("/api/insights", async (req, res) => {
   try {
     const db = loadDB();
     const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const txns = db.transactions.filter(t => t.date >= cutoff && !EXCLUDED_FROM_SPEND.has(t.category));
+    const txns = db.transactions.filter(t => t.date >= cutoff && !EXCLUDED_FROM_SPEND.has(t.category) && isFromActiveAccount(db, t.account_id));
 
     const catMap = {};
     txns.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + t.amount; });
@@ -707,7 +770,7 @@ Respond ONLY in JSON: {"cut":"...","savings":"$X/month","sneaky":"...","positive
 
 function buildAdvisorContext(db) {
   const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const inWindow = db.transactions.filter(t => t.date >= cutoff);
+  const inWindow = db.transactions.filter(t => t.date >= cutoff && isFromActiveAccount(db, t.account_id));
   const txns = inWindow.filter(t => !EXCLUDED_FROM_SPEND.has(t.category));
   const total = txns.reduce((s, t) => s + t.amount, 0);
   const months = new Set(txns.map(t => t.date.slice(0, 7))).size || 1;
@@ -1178,13 +1241,19 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Re-categorize stored transactions on startup so categorizer changes
-// take effect without requiring a re-sync.
+// Re-categorize stored transactions on startup so categorizer changes take
+// effect without requiring a re-sync. Provider-flagged categories (Transfers
+// & Payments, Currency Exchange) are sticky — those classifications come from
+// the bank-data provider's own type/category fields and shouldn't be
+// overwritten by description-based regex. A user override always wins.
+const PROVIDER_FLAGGED_CATEGORIES = new Set(["Transfers & Payments", "Currency Exchange"]);
 (function recategorizeOnStartup() {
   const db = loadDB();
   if (!db.transactions.length) return;
   let changed = 0;
   db.transactions.forEach(t => {
+    const userOverride = db.merchantOverrides?.[t.merchant];
+    if (PROVIDER_FLAGGED_CATEGORIES.has(t.category) && !userOverride) return;
     const fresh = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
     if (fresh !== t.category) { t.category = fresh; changed++; }
   });
