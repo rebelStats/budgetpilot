@@ -120,6 +120,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
   <div class="nav">
     <button class="nav-btn active" onclick="showView('dashboard')">◉ Dashboard</button>
     <button class="nav-btn" onclick="showView('transactions')">≡ Transactions</button>
+    <button class="nav-btn" onclick="showView('transfers')">⇄ Transfers</button>
     <button class="nav-btn" onclick="showView('insights')">✦ AI Advisor</button>
     <button class="nav-btn" onclick="showView('import')">↥ Import</button>
     <button class="nav-btn" onclick="showView('connect')">⊕ Connect</button>
@@ -201,6 +202,38 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
         <span id="txn-footer-count" style="color:var(--dim);font-size:12px;"></span>
         <span id="txn-footer-total" class="mono" style="text-align:right;font-weight:600;color:var(--red);"></span>
       </div>
+    </div>
+  </div>
+
+  <!-- TRANSFERS VIEW -->
+  <div id="view-transfers" class="hidden">
+    <div style="display:flex;justify-content:space-between;align-items:end;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+      <div>
+        <h2 style="font-size:22px;font-weight:600;">Transfers &amp; money movement</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:4px;">Credit-card payments, account-to-account transfers, top-ups, salary, broker activity, currency exchanges. Excluded from spend totals.</p>
+      </div>
+      <input id="xfer-search" type="text" placeholder="Search merchant, description, source…" oninput="setXferSearch(this.value)"
+             style="flex:1;min-width:220px;max-width:380px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:13px;font-family:inherit;outline:none;">
+    </div>
+
+    <div class="grid-2" id="xfer-totals" style="margin-bottom:16px;"></div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;font-size:13px;color:var(--muted);flex-wrap:wrap;">
+      <span>Direction:</span>
+      <button class="cat-chip" data-dir="all" onclick="setXferDir('all')">All</button>
+      <button class="cat-chip" data-dir="out" onclick="setXferDir('out')">Out (transfers + payments)</button>
+      <button class="cat-chip" data-dir="in"  onclick="setXferDir('in')">In (top-ups + salary + refunds)</button>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="txn-header">
+        <span style="padding:12px 16px;">Date</span>
+        <span style="padding:12px 16px;">Description</span>
+        <span style="padding:12px 16px;">Type</span>
+        <span style="padding:12px 16px;">Source</span>
+        <span style="padding:12px 16px;text-align:right;">Amount</span>
+      </div>
+      <div class="txn-scroll" id="xfer-list"></div>
     </div>
   </div>
 
@@ -319,6 +352,7 @@ function showView(id) {
 
   if (id === "dashboard") loadDashboard();
   if (id === "transactions") loadTransactions();
+  if (id === "transfers") loadTransfers();
   if (id === "connect") loadAccounts();
 }
 
@@ -865,6 +899,95 @@ function openDescriptionEditor(span) {
     else if (e.key === "Escape") finish(false);
   });
   input.addEventListener("blur", () => finish(true));
+}
+
+// ---- Transfers (money-movement view) ----
+let xferData = [];
+let xferDir = "all";   // "all" | "out" | "in"
+let xferSearch = "";
+
+const XFER_CATS = new Set(["Transfers & Payments", "Currency Exchange"]);
+
+async function loadTransfers() {
+  try {
+    // Pull every transaction in the dashboard's window so we get real movement
+    // history (Capital One Teller can go back ~2y; the dashboard window selector
+    // already governs scope).
+    const days = dashWindow === "all" ? 100000 : Number(dashWindow);
+    const resp = await fetch(`/api/transactions?days=${days}`);
+    const all = await resp.json();
+    xferData = all.filter(t => XFER_CATS.has(t.category));
+    renderTransfers();
+  } catch (err) { console.error(err); }
+}
+
+function setXferDir(dir) { xferDir = dir; renderTransfers(); }
+function setXferSearch(v) { xferSearch = v.trim().toLowerCase(); renderTransfers(); }
+
+function renderTransfers() {
+  document.querySelectorAll("#view-transfers .cat-chip").forEach(b => {
+    b.classList.toggle("active", b.dataset.dir === xferDir);
+  });
+
+  let rows = xferData.slice();
+  if (xferDir === "out") rows = rows.filter(t => t.amount > 0);
+  else if (xferDir === "in") rows = rows.filter(t => t.amount < 0);
+  if (xferSearch) {
+    rows = rows.filter(t =>
+      (t.description || "").toLowerCase().includes(xferSearch) ||
+      (t.merchant || "").toLowerCase().includes(xferSearch) ||
+      (t.source || "").toLowerCase().includes(xferSearch) ||
+      (t.category || "").toLowerCase().includes(xferSearch)
+    );
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date));
+
+  const out = rows.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const inc = rows.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+  document.getElementById("xfer-totals").innerHTML = `
+    <div class="card stat-card">
+      <div class="stat-label">Money out (transfers + CC payments)</div>
+      <div class="stat-value mono" style="color:var(--red)">${fmt(out)}</div>
+      <div class="stat-sub">${rows.filter(t => t.amount > 0).length} transactions</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-label">Money in (top-ups + salary + refunds in)</div>
+      <div class="stat-value mono" style="color:var(--green)">+${fmt(inc)}</div>
+      <div class="stat-sub">${rows.filter(t => t.amount < 0).length} transactions</div>
+    </div>
+  `;
+
+  document.getElementById("xfer-list").innerHTML = rows.map(t => {
+    const isOut = t.amount > 0;
+    const amountColor = isOut ? "var(--red)" : "var(--green)";
+    const amountStr = isOut ? fmt(t.amount) : `+${fmt(Math.abs(t.amount))}`;
+    const showsConversion = t.currency_original && t.currency_original !== "USD";
+    const origAmt = (t.amount_original ?? t.amount);
+    const origStr = origAmt < 0
+      ? `+${Math.abs(origAmt).toFixed(2)} ${t.currency_original}`
+      : `${origAmt.toFixed(2)} ${t.currency_original}`;
+    const amountHtml = showsConversion
+      ? `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${origStr}</span></span>`
+      : `<span class="mono" style="text-align:right;font-size:12px;color:${amountColor}">${amountStr}</span>`;
+
+    const d = new Date(t.date);
+    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const catColor = CAT_COLORS[t.category] || "var(--dim)";
+    const srcColor = sourceColor(t.source);
+    const dirBadge = isOut
+      ? `<span class="badge" style="background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.4);font-size:10px;">↗ OUT</span>`
+      : `<span class="badge" style="background:rgba(16,185,129,0.12);color:var(--green);border:1px solid rgba(16,185,129,0.4);font-size:10px;">↙ IN</span>`;
+    const catBadge = `<span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${t.category === 'Currency Exchange' ? 'FX' : 'Transfer'}</span>`;
+    return `
+      <div class="txn-row">
+        <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${escapeHtml(t.description)}</span>
+        <span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">${dirBadge} ${catBadge}</span>
+        <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${t.source || '?'}</span>
+        ${amountHtml}
+      </div>
+    `;
+  }).join("") || `<div style="padding:24px;color:var(--dim);font-size:14px;text-align:center;">No transfers in this window. Click Sync transactions on the Connect tab to fetch the latest data.</div>`;
 }
 
 // ---- AI Insights ----

@@ -28,8 +28,9 @@ const CATEGORIES = [
 ];
 
 // Categories that represent money-movement, not discretionary spending.
-// Currency Exchange is fully excluded from spend totals.
-const EXCLUDED_FROM_SPEND = new Set(["Currency Exchange"]);
+// Both are excluded from spend totals on the dashboard but remain visible in
+// the Transfers tab so the user can see where money moves to/from.
+const EXCLUDED_FROM_SPEND = new Set(["Currency Exchange", "Transfers & Payments"]);
 
 function categorize(plaidCategories, merchantName, cache, description, overrides) {
   // Manual user override always wins.
@@ -303,22 +304,13 @@ app.post("/api/sync", async (req, res) => {
     for (const connection of targets) {
       const adapter = getProvider(connection.provider);
       let added = 0;
-      let skippedNonSpend = 0;
+      let addedTransfers = 0;
       let skippedDup = 0;
       try {
         const { transactions } = await adapter.fetchTransactions(connection, { startDate, endDate });
         for (const t of transactions) {
           if (existingIds.has(t.id)) continue;
-          // adapter-specific income/transfer/CC-payment filter (works on raw shape)
-          if (t.provider_metadata && adapter.isNonSpendCredit?.({
-            description: t.description,
-            details: { counterparty: { name: t.merchant }, category: t.provider_metadata.category },
-            type: t.provider_metadata.type,
-            amount: String(-t.amount), // pass pre-flip sign for the heuristic
-          })) {
-            skippedNonSpend++;
-            continue;
-          }
+
           // Cross-source dedup against existing transactions
           const dupProbe = { date: t.date, amount: t.amount, merchant: t.merchant, description: t.description };
           if (findCrossSourceDuplicate(dupProbe, db.transactions)) { skippedDup++; continue; }
@@ -331,27 +323,33 @@ app.post("/api/sync", async (req, res) => {
             continue;
           }
 
+          // Adapter-flagged transfers go straight into Transfers & Payments;
+          // overrides win for everything else.
+          const finalCategory = t.forced_category
+            || categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
+
           db.transactions.push({
             id: t.id,
             account_id: acct.id,
             date: t.date,
             description: t.description,
             amount: t.amount,
-            category: categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides),
+            category: finalCategory,
             merchant: t.merchant,
             source: connection.institution_name,
             currency: t.currency || "USD",
           });
           existingIds.add(t.id);
-          added++;
+          if (finalCategory === "Transfers & Payments") addedTransfers++;
+          else added++;
         }
       } catch (err) {
         console.error(`Sync ${connection.provider} (${connection.id}) failed: ${err.message}`);
         perConnection.push({ connectionId: connection.id, provider: connection.provider, error: err.message });
         continue;
       }
-      perConnection.push({ connectionId: connection.id, provider: connection.provider, added, skippedNonSpend, skippedDup });
-      totalAdded += added;
+      perConnection.push({ connectionId: connection.id, provider: connection.provider, added, addedTransfers, skippedDup });
+      totalAdded += added + addedTransfers;
     }
 
     db.transactions.sort((a, b) => b.date.localeCompare(a.date));
@@ -576,12 +574,22 @@ app.get("/api/summary", (req, res) => {
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const allInWindow = db.transactions.filter(t => t.date >= cutoff);
 
-  // Money movement (FX, cash, transfers) — broken out for the dashboard widget.
-  const movement = { exchanged: 0, cashAtm: 0, transfers: 0, exchangeCount: 0, cashCount: 0, transferCount: 0 };
+  // Money movement (FX, cash, transfers) — broken out for the dashboard widget
+  // and the Transfers tab. Transfers are split by sign so the widget shows OUT
+  // and IN separately rather than netting them.
+  const movement = {
+    exchanged: 0, exchangeCount: 0,
+    cashAtm: 0, cashCount: 0,
+    transfersOut: 0, transferOutCount: 0,
+    transfersIn: 0, transferInCount: 0,
+  };
   allInWindow.forEach(t => {
     if (t.category === "Currency Exchange") { movement.exchanged += t.amount; movement.exchangeCount++; }
     else if (t.category === "Cash & ATM") { movement.cashAtm += t.amount; movement.cashCount++; }
-    else if (t.category === "Transfers & Payments") { movement.transfers += t.amount; movement.transferCount++; }
+    else if (t.category === "Transfers & Payments") {
+      if (t.amount >= 0) { movement.transfersOut += t.amount; movement.transferOutCount++; }
+      else { movement.transfersIn += Math.abs(t.amount); movement.transferInCount++; }
+    }
   });
 
   // Spend-relevant transactions: drop excluded categories so they never bias the totals.
@@ -946,7 +954,7 @@ async function extractTransactionsFromFile({ filename, mimeType, base64data }) {
   const isPdf = (mimeType && mimeType.includes("pdf")) || /\.pdf$/i.test(filename || "");
   const isCsv = /\.csv$/i.test(filename || "") || mimeType === "text/csv" || mimeType === "text/plain";
 
-  const instructions = `Extract every spending-relevant transaction from this financial statement.
+  const instructions = `Extract every transaction from this financial statement EXCEPT bank-paid interest and cashback rewards.
 
 INCLUDE as POSITIVE amounts (money the user spent):
 - Card purchases
@@ -959,21 +967,24 @@ INCLUDE as NEGATIVE amounts (money returned to the user from a previous purchase
 - Refunds, returns, reversals, chargebacks (e.g. "Refund from SPAR")
 - Use the merchant of the original purchase
 
-SKIP entirely (true income, not refunds):
-- Salary, payroll, wages
-- Bank deposits, top-ups, account funding (e.g. "Top-up by *6365")
+INCLUDE as NEGATIVE amounts and set category to "Transfers & Payments" (money flowing INTO the account, not refunds):
+- Top-ups and account funding (e.g. "Top-up by *6365")
 - Incoming person-to-person transfers (e.g. "Transfer from JOHN SMITH")
-- Interest earned, dividends, cashback rewards
+- Salary, payroll, wages
 - Tax refunds from a government
+
+SKIP entirely:
+- Interest earned, dividends, cashback rewards (typically tiny amounts)
 
 Return ONLY a JSON array (no prose, no markdown fences) of objects with these fields:
 - date: YYYY-MM-DD
-- description: full original transaction description, INCLUDING any "Transfer to <NAME>", "Exchanged to <CCY>", or "Refund from <NAME>" prefix verbatim
-- amount: number in the SOURCE currency. POSITIVE for spending, NEGATIVE for refunds. Do not convert.
-- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST"). For transfers use the recipient name. For exchanges use "Exchange". For cash withdrawals use the ATM/location name. For refunds use the original merchant.
+- description: full original transaction description, INCLUDING any "Transfer to <NAME>", "Exchanged to <CCY>", "Top-up by ...", "Refund from ...", or salary descriptor prefix verbatim
+- amount: number in the SOURCE currency. POSITIVE for spending/outgoing transfers; NEGATIVE for refunds and incoming transfers/top-ups/salary. Do not convert.
+- merchant: short cleaned merchant name suitable for grouping (e.g., "SPAR" not "SPAR 1234 BUDAPEST"). For transfers use the counterparty name. For exchanges use "Exchange". For cash withdrawals use the ATM/location name. For refunds use the original merchant. For top-ups use "Top-up" or the funding source name.
 - currency: 3-letter ISO code of the source amount (e.g. "PLN", "EUR", "HUF", "USD")
+- category: optional. If you set this, use ONLY "Transfers & Payments" for incoming-transfer rows; leave unset otherwise.
 
-Return [] if no spending-relevant transactions are found.`;
+Return [] if no transactions are found.`;
 
   let content;
   if (isPdf) {
@@ -1065,7 +1076,13 @@ app.post("/api/import/parse", async (req, res) => {
     const monthRates = await getRatesForMonths(months, db);
 
     extracted.forEach(t => {
-      t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
+      // Honor a Transfers & Payments hint from Haiku (incoming transfer / top-up
+      // / salary). Anything else falls through to the normal categorizer.
+      if (t.category === "Transfers & Payments" && CATEGORIES.includes(t.category)) {
+        // keep as-is; it's a legitimate transfer hint
+      } else {
+        t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
+      }
       t.amount_original = t.amount;
       t.currency_original = (t.currency || "USD").toUpperCase();
       const ym = (t.date || "").slice(0, 7);
