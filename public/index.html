@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MeridianWallet</title>
-<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 <script src="https://cdn.teller.io/connect/connect.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -134,7 +133,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
     <div id="dash-empty" class="empty">
       <div class="empty-icon">◉</div>
       <h2 style="font-size:20px;font-weight:600;margin-bottom:8px;">Connect your bank to get started</h2>
-      <p style="color:var(--muted);margin-bottom:24px;">Link your bank accounts via Plaid</p>
+      <p style="color:var(--muted);margin-bottom:24px;">Link your bank accounts to start tracking spending</p>
       <button class="btn btn-primary" onclick="showView('connect')">Connect bank account</button>
     </div>
 
@@ -259,10 +258,10 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
   <div id="view-connect" class="hidden">
     <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;">Connect accounts</h2>
     <p style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">
-      Link your bank accounts through Plaid. Your credentials go directly to Plaid — MeridianWallet never sees your login info.
+      Link your bank accounts. Your credentials go directly to the data provider (Teller for US banks) — MeridianWallet never sees your login info.
     </p>
 
-    <div class="connect-card" onclick="openPlaidLink()">
+    <div class="connect-card" onclick="openConnect('teller')">
       <div style="font-size:40px;margin-bottom:12px;">⊕</div>
       <div style="font-size:16px;font-weight:500;margin-bottom:8px;">Connect a bank account</div>
       <div style="font-size:13px;color:var(--dim);">12,000+ supported institutions across 18 countries</div>
@@ -275,7 +274,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
           <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="recategorize()">
             ✦ Smart categorize
           </button>
-          <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="syncTransactions()">
+          <button class="btn btn-outline" style="font-size:12px;padding:6px 14px;" onclick="runSync()">
             ↻ Sync transactions
           </button>
         </div>
@@ -504,7 +503,7 @@ async function recategorize() {
 }
 
 async function removeAccount(id, name) {
-  if (!confirm(`Remove "${name}"? This deletes its transactions locally and revokes the Plaid connection if no other accounts share it.`)) return;
+  if (!confirm(`Remove "${name}"? This deletes its transactions locally and revokes the bank-data connection if no other accounts share it.`)) return;
   try {
     const resp = await fetch(`/api/accounts/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!resp.ok) throw new Error(await resp.text());
@@ -512,7 +511,7 @@ async function removeAccount(id, name) {
     loadAccounts();
     document.getElementById("sync-status").innerHTML =
       `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
-        Removed account · ${data.removedTxns} transactions deleted${data.itemRevoked ? " · Plaid connection revoked" : ""}
+        Removed account · ${data.removedTxns} transactions deleted${data.itemRevoked ? " · upstream connection revoked" : ""}
       </div>`;
   } catch (err) {
     document.getElementById("sync-status").innerHTML =
