@@ -16,6 +16,7 @@ app.use(express.static(path.join(__dirname, "public")));
 // migration (legacy accounts with access_tokens become plaid_legacy connections).
 // ---------------------------------------------------------------------------
 const { loadDB, saveDB, DB_PATH } = require("./lib/db");
+const { getProvider, listProviders } = require("./lib/providers");
 
 // ---------------------------------------------------------------------------
 // Category mapping: regex fast path → AI classifier (cached) → "Other"
@@ -337,6 +338,208 @@ app.post("/api/plaid/sync-transactions", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Routes: Connections (provider-agnostic)
+//   Replaces /api/plaid/* with a uniform interface that dispatches to the
+//   provider module (Teller for new connections; gocardless future).
+// ---------------------------------------------------------------------------
+
+app.post("/api/connect/init", async (req, res) => {
+  try {
+    const { provider } = req.body || {};
+    if (!provider) return res.status(400).json({ error: "provider required" });
+    if (provider === "plaid_legacy") {
+      return res.status(400).json({ error: "Plaid is no longer supported for new connections." });
+    }
+    const adapter = getProvider(provider);
+    const init = await adapter.initConnect({ returnUrl: req.body?.returnUrl });
+    res.json({ provider, ...init });
+  } catch (err) {
+    console.error("connect/init error:", err.message);
+    res.status(500).json({ error: err.message || "Failed to initialize connect" });
+  }
+});
+
+app.post("/api/connect/complete", async (req, res) => {
+  try {
+    const { provider, draftId, callback } = req.body || {};
+    if (!provider) return res.status(400).json({ error: "provider required" });
+    const adapter = getProvider(provider);
+    const partial = await adapter.completeConnect({ provider, draftId, callback });
+
+    const db = loadDB();
+    const connectionId = "conn_" + crypto.randomBytes(8).toString("hex");
+    const connection = {
+      id: connectionId,
+      provider: partial.provider,
+      status: partial.status || "active",
+      institution_name: partial.institution_name,
+      created_at: new Date().toISOString(),
+      expires_at: partial.expires_at || null,
+      credentials: partial.credentials,
+    };
+    db.connections.push(connection);
+
+    // Discover accounts under this new connection and store them.
+    const providerAccounts = await adapter.listAccounts(connection);
+    const newAccounts = providerAccounts.map(pa => ({
+      id: "acct_" + crypto.randomBytes(8).toString("hex"),
+      connection_id: connectionId,
+      provider_account_id: pa.providerAccountId,
+      institution_name: connection.institution_name,
+      account_name: pa.name,
+      account_type: pa.type,
+      currency: pa.currency || "USD",
+      mask: pa.mask || null,
+    }));
+    db.accounts.push(...newAccounts);
+    saveDB(db);
+
+    // Strip credentials from response.
+    const { credentials, ...safeConn } = connection;
+    res.json({
+      connection: safeConn,
+      accounts: newAccounts.map(({ id, account_name, account_type, mask, currency }) =>
+        ({ id, account_name, account_type, mask, currency })),
+    });
+  } catch (err) {
+    console.error("connect/complete error:", err.message);
+    res.status(500).json({ error: err.message || "Failed to complete connect" });
+  }
+});
+
+app.get("/api/connect/callback", (req, res) => {
+  // Route shell for future redirect-flow providers (e.g. GoCardless). Frontend
+  // will call /api/connect/complete after this lands and finalize the connection.
+  res.status(501).json({ error: "Redirect-flow providers not yet wired" });
+});
+
+app.get("/api/connections", (req, res) => {
+  const db = loadDB();
+  // Strip credentials before responding.
+  const safe = db.connections.map(({ credentials, ...rest }) => rest);
+  res.json(safe);
+});
+
+app.delete("/api/connections/:id", async (req, res) => {
+  try {
+    const db = loadDB();
+    const connection = db.connections.find(c => c.id === req.params.id);
+    if (!connection) return res.status(404).json({ error: "Connection not found" });
+
+    let revoked = false;
+    try {
+      const adapter = getProvider(connection.provider);
+      const result = await adapter.disconnect(connection);
+      revoked = !!result?.revoked;
+    } catch (err) {
+      console.error(`Provider disconnect (${connection.provider}) failed: ${err.message}`);
+      // Continue with local cleanup even if upstream disconnect fails.
+    }
+
+    const accountIds = db.accounts.filter(a => a.connection_id === connection.id).map(a => a.id);
+    const removedTxns = db.transactions.filter(t => accountIds.includes(t.account_id)).length;
+    db.transactions = db.transactions.filter(t => !accountIds.includes(t.account_id));
+    db.accounts = db.accounts.filter(a => a.connection_id !== connection.id);
+    db.connections = db.connections.filter(c => c.id !== connection.id);
+    saveDB(db);
+    res.json({ removed: connection.id, revoked, removedTxns, removedAccounts: accountIds.length });
+  } catch (err) {
+    console.error("DELETE /api/connections error:", err.message);
+    res.status(500).json({ error: "Failed to remove connection" });
+  }
+});
+
+app.post("/api/sync", async (req, res) => {
+  try {
+    const db = loadDB();
+    const targetId = req.body?.connectionId;
+    const targets = targetId
+      ? db.connections.filter(c => c.id === targetId)
+      : db.connections.filter(c => c.status === "active" && c.provider !== "plaid_legacy");
+
+    if (!targets.length) {
+      return res.json({ added: 0, perConnection: [], note: "No active non-legacy connections to sync" });
+    }
+
+    const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const endDate = new Date().toISOString().slice(0, 10);
+    const existingIds = new Set(db.transactions.map(t => t.id));
+    const perConnection = [];
+
+    // Recategorize existing transactions so categorizer fixes apply without forcing a wipe.
+    db.transactions.forEach(t => {
+      t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
+    });
+
+    let totalAdded = 0;
+    for (const connection of targets) {
+      const adapter = getProvider(connection.provider);
+      let added = 0;
+      let skippedNonSpend = 0;
+      let skippedDup = 0;
+      try {
+        const { transactions } = await adapter.fetchTransactions(connection, { startDate, endDate });
+        for (const t of transactions) {
+          if (existingIds.has(t.id)) continue;
+          // adapter-specific income/transfer/CC-payment filter (works on raw shape)
+          if (t.provider_metadata && adapter.isNonSpendCredit?.({
+            description: t.description,
+            details: { counterparty: { name: t.merchant }, category: t.provider_metadata.category },
+            type: t.provider_metadata.type,
+            amount: String(-t.amount), // pass pre-flip sign for the heuristic
+          })) {
+            skippedNonSpend++;
+            continue;
+          }
+          // Cross-source dedup against existing transactions
+          const dupProbe = { date: t.date, amount: t.amount, merchant: t.merchant, description: t.description };
+          if (findCrossSourceDuplicate(dupProbe, db.transactions)) { skippedDup++; continue; }
+
+          // Map providerAccountId → our internal account.id
+          const acct = db.accounts.find(a =>
+            a.connection_id === connection.id && a.provider_account_id === t.providerAccountId);
+          if (!acct) {
+            console.error(`Sync: no account row for ${connection.provider} providerAccountId=${t.providerAccountId} on connection ${connection.id}`);
+            continue;
+          }
+
+          db.transactions.push({
+            id: t.id,
+            account_id: acct.id,
+            date: t.date,
+            description: t.description,
+            amount: t.amount,
+            category: categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides),
+            merchant: t.merchant,
+            source: connection.institution_name,
+            currency: t.currency || "USD",
+          });
+          existingIds.add(t.id);
+          added++;
+        }
+      } catch (err) {
+        console.error(`Sync ${connection.provider} (${connection.id}) failed: ${err.message}`);
+        perConnection.push({ connectionId: connection.id, provider: connection.provider, error: err.message });
+        continue;
+      }
+      perConnection.push({ connectionId: connection.id, provider: connection.provider, added, skippedNonSpend, skippedDup });
+      totalAdded += added;
+    }
+
+    db.transactions.sort((a, b) => b.date.localeCompare(a.date));
+
+    // AI classification on any newly-unknown merchants.
+    const aiResult = await classifyUnknownMerchants(db);
+
+    saveDB(db);
+    res.json({ added: totalAdded, perConnection, aiClassified: aiResult.classified, total: db.transactions.length });
+  } catch (err) {
+    console.error("/api/sync error:", err.message);
+    res.status(500).json({ error: "Failed to sync" });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Routes: Data queries
 // ---------------------------------------------------------------------------
 
@@ -501,21 +704,28 @@ app.delete("/api/accounts/:id", async (req, res) => {
     db.transactions = db.transactions.filter(t => t.account_id !== target.id);
     db.accounts = db.accounts.filter(a => a.id !== target.id);
 
-    const stillUsed = db.accounts.some(a => a.access_token === target.access_token);
+    // If this was the last account on its connection, also drop the connection
+    // and call the provider's disconnect to revoke upstream credentials.
     let itemRevoked = false;
-    if (!stillUsed) {
-      try {
-        await plaid.itemRemove({ access_token: target.access_token });
-        itemRevoked = true;
-      } catch (err) {
-        console.error("Plaid itemRemove failed (continuing anyway):", err.response?.data || err.message);
+    const connection = db.connections.find(c => c.id === target.connection_id);
+    if (connection) {
+      const remainingOnConnection = db.accounts.some(a => a.connection_id === connection.id);
+      if (!remainingOnConnection) {
+        try {
+          const adapter = getProvider(connection.provider);
+          const result = await adapter.disconnect(connection);
+          itemRevoked = !!result?.revoked;
+        } catch (err) {
+          console.error(`Provider disconnect (${connection.provider}) failed: ${err.message}`);
+        }
+        db.connections = db.connections.filter(c => c.id !== connection.id);
       }
     }
 
     saveDB(db);
     res.json({ removed: target.id, removedTxns, itemRevoked });
   } catch (err) {
-    console.error("Delete account error:", err.response?.data || err.message);
+    console.error("Delete account error:", err.message);
     res.status(500).json({ error: "Failed to remove account" });
   }
 });
