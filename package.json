@@ -1,15 +1,15 @@
 {
   "name": "meridianwallet",
   "version": "1.0.0",
-  "description": "Personal financial advisor with Plaid + Claude AI",
+  "description": "Personal finance dashboard with Teller bank sync, multi-currency import, and Claude-powered AI advisor",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "plaid": "^23.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1"
   }

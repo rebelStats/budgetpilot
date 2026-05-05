@@ -4,7 +4,6 @@ const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { Configuration, PlaidApi, PlaidEnvironments, Products } = require("plaid");
 
 const app = express();
 app.use(cors());
@@ -156,101 +155,6 @@ function mapCategory(plaidCategories, merchantName) {
   return "Other";
 }
 
-// ---------------------------------------------------------------------------
-// Plaid client
-// ---------------------------------------------------------------------------
-const plaidConfig = new Configuration({
-  basePath: PlaidEnvironments[process.env.PLAID_ENV || "sandbox"],
-  baseOptions: {
-    headers: {
-      "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
-      "PLAID-SECRET": process.env.PLAID_SECRET,
-    },
-  },
-});
-const plaid = new PlaidApi(plaidConfig);
-
-const PLAID_COUNTRY_CODES = (process.env.PLAID_COUNTRY_CODES || "US")
-  .split(",")
-  .map(c => c.trim().toUpperCase())
-  .filter(Boolean);
-
-// ---------------------------------------------------------------------------
-// Routes: Plaid Link
-// ---------------------------------------------------------------------------
-
-app.post("/api/plaid/create-link-token", async (req, res) => {
-  try {
-    const response = await plaid.linkTokenCreate({
-      user: { client_user_id: "meridianwallet-user-1" },
-      client_name: "MeridianWallet",
-      products: [Products.Transactions],
-      country_codes: PLAID_COUNTRY_CODES,
-      language: "en",
-    });
-    res.json({ link_token: response.data.link_token });
-  } catch (err) {
-    console.error("Link token error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Failed to create link token" });
-  }
-});
-
-app.post("/api/plaid/exchange-token", async (req, res) => {
-  try {
-    const { public_token, institution } = req.body;
-    const exchange = await plaid.itemPublicTokenExchange({ public_token });
-    const access_token = exchange.data.access_token;
-    const item_id = exchange.data.item_id;
-    const accts = await plaid.accountsGet({ access_token });
-
-    const db = loadDB();
-    const saved = [];
-
-    for (const acct of accts.data.accounts) {
-      const existing = db.accounts.findIndex(a => a.id === acct.account_id);
-      const record = {
-        id: acct.account_id,
-        institution_name: institution?.name || "Unknown",
-        account_name: acct.name,
-        account_type: acct.subtype || acct.type,
-        access_token,
-        item_id,
-      };
-      if (existing >= 0) db.accounts[existing] = record;
-      else db.accounts.push(record);
-      saved.push({ id: acct.account_id, name: acct.name, type: acct.subtype });
-    }
-
-    saveDB(db);
-    res.json({ accounts: saved });
-  } catch (err) {
-    console.error("Exchange error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Failed to exchange token" });
-  }
-});
-
-// Identifies non-spend credits we should skip even when Plaid sends them as
-// negative-amount transactions. Includes income, transfers in, and credit-card
-// payments (paying off a card balance is just moving money — neither spending
-// nor a refund).
-function isPlaidIncomeOrTransferIn(t) {
-  const cats = (t.category || []).join(" ").toLowerCase();
-  if (/payroll|salary|interest earned|deposit|tax refund/i.test(cats)) return true;
-  // Credit-card payments: legacy ["Payment", "Credit Card"]
-  if (/payment/i.test(cats) && /credit card/i.test(cats)) return true;
-
-  const pfc = t.personal_finance_category?.primary;
-  const pfcDetail = t.personal_finance_category?.detailed;
-  if (pfc === "INCOME" || pfc === "TRANSFER_IN") return true;
-  if (pfcDetail === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT") return true;
-
-  // Description-based fallback for institutions whose PFC tagging is unreliable.
-  const text = `${t.name || ""} ${t.merchant_name || ""}`;
-  if (/online pymt|online payment|card payment|autopay payment|thank you for your payment|capital one.*(pymt|payment)/i.test(text)) return true;
-
-  return false;
-}
-
 // True when an EXISTING stored transaction looks like a credit-card payment
 // rather than a real refund. Used by the cleanup endpoint and the startup
 // sweep to retroactively remove these from the local DB.
@@ -260,87 +164,11 @@ function isStoredCreditCardPayment(t) {
   return /online pymt|online payment|card payment|autopay payment|thank you for your payment|capital one.*(pymt|payment)/i.test(text);
 }
 
-app.post("/api/plaid/sync-transactions", async (req, res) => {
-  try {
-    const db = loadDB();
-    const tokenSet = new Map();
-    db.accounts.forEach(a => tokenSet.set(a.access_token, a.institution_name));
-
-    let totalAdded = 0;
-    const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const endDate = new Date().toISOString().slice(0, 10);
-    const existingIds = new Set(db.transactions.map(t => t.id));
-
-    // INTENTIONAL: we only ADD new transactions here, never delete existing ones.
-    // Plaid's API rolls forward (typically ~90 days for many institutions); when a
-    // transaction falls out of Plaid's window our local copy is preserved.
-
-    // Re-categorize existing transactions so a categorizer fix is reflected
-    // without forcing the user to wipe their data.
-    db.transactions.forEach(t => {
-      t.category = categorize([], t.merchant, db.merchantCache, t.description, db.merchantOverrides);
-    });
-
-    for (const [access_token, institution_name] of tokenSet) {
-      let offset = 0;
-      let hasMore = true;
-
-      while (hasMore) {
-        const txnResp = await plaid.transactionsGet({
-          access_token,
-          start_date: startDate,
-          end_date: endDate,
-          options: { count: 500, offset },
-        });
-
-        for (const t of txnResp.data.transactions) {
-          // Skip non-spending income (salary, deposits, interest, transfers in).
-          // Refunds remain — Plaid sends them as negative amounts and we want
-          // them stored so they reduce the spend total in their merchant's category.
-          if (isPlaidIncomeOrTransferIn(t)) continue;
-          if (t.amount === 0) continue;
-          if (existingIds.has(t.transaction_id)) continue;
-
-          // Skip if a manual import already covers this transaction.
-          const probe = { date: t.date, amount: t.amount, merchant: t.merchant_name || t.name, description: t.name || t.merchant_name };
-          if (findCrossSourceDuplicate(probe, db.transactions)) continue;
-
-          db.transactions.push({
-            id: t.transaction_id,
-            account_id: t.account_id,
-            date: t.date,
-            description: t.name || t.merchant_name || "Unknown",
-            amount: t.amount,
-            category: categorize(t.category, t.merchant_name, db.merchantCache, t.name, db.merchantOverrides),
-            merchant: t.merchant_name || t.name || "",
-            source: institution_name,
-            currency: t.iso_currency_code || "USD",
-          });
-          existingIds.add(t.transaction_id);
-          totalAdded++;
-        }
-
-        hasMore = txnResp.data.total_transactions > offset + txnResp.data.transactions.length;
-        offset += txnResp.data.transactions.length;
-      }
-    }
-
-    db.transactions.sort((a, b) => b.date.localeCompare(a.date));
-
-    const aiResult = await classifyUnknownMerchants(db);
-
-    saveDB(db);
-    res.json({ added: totalAdded, total: db.transactions.length, aiClassified: aiResult.classified });
-  } catch (err) {
-    console.error("Sync error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Failed to sync transactions" });
-  }
-});
-
 // ---------------------------------------------------------------------------
 // Routes: Connections (provider-agnostic)
-//   Replaces /api/plaid/* with a uniform interface that dispatches to the
-//   provider module (Teller for new connections; gocardless future).
+//   Dispatches to the provider module (Teller for new connections;
+//   gocardless future). Plaid was the previous provider; historical
+//   plaid_legacy connections remain readable but cannot be re-synced.
 // ---------------------------------------------------------------------------
 
 app.post("/api/connect/init", async (req, res) => {

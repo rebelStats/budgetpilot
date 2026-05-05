@@ -411,57 +411,6 @@ async function runSync() {
   }
 }
 
-// ---- Plaid Link (legacy — Phase 4 will remove the UI entry point) ----
-async function openPlaidLink() {
-  try {
-    const resp = await fetch("/api/plaid/create-link-token", { method: "POST" });
-    const { link_token, error } = await resp.json();
-    if (error) { alert("Error: " + error); return; }
-
-    const handler = Plaid.create({
-      token: link_token,
-      onSuccess: async (public_token, metadata) => {
-        const exResp = await fetch("/api/plaid/exchange-token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ public_token, institution: metadata.institution }),
-        });
-        const result = await exResp.json();
-        if (result.accounts) {
-          document.getElementById("sync-status").innerHTML =
-            `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
-              Connected ${result.accounts.length} account(s). Syncing transactions...
-            </div>`;
-          await syncTransactions();
-          loadAccounts();
-        }
-      },
-      onExit: (err) => { if (err) console.error("Plaid exit:", err); },
-    });
-    handler.open();
-  } catch (err) {
-    console.error(err);
-    alert("Could not open Plaid Link. Make sure the server is running and PLAID keys are configured.");
-  }
-}
-
-// ---- Sync ----
-async function syncTransactions() {
-  document.getElementById("sync-status").innerHTML =
-    '<div style="padding:12px;color:var(--accent);font-size:14px;"><span class="spinner"></span> Syncing transactions...</div>';
-  try {
-    const resp = await fetch("/api/plaid/sync-transactions", { method: "POST" });
-    const data = await resp.json();
-    document.getElementById("sync-status").innerHTML =
-      `<div style="padding:12px 16px;border-radius:8px;background:rgba(16,185,129,0.12);color:#10b981;font-size:14px;">
-        Synced ${data.added} transactions (${data.total} total)
-      </div>`;
-    document.getElementById("txn-count").textContent = data.total + " transactions loaded";
-  } catch (err) {
-    document.getElementById("sync-status").innerHTML =
-      '<div style="padding:12px;color:var(--red);font-size:14px;">Sync failed. Check server logs.</div>';
-  }
-}
 
 // ---- Load accounts ----
 async function loadAccounts() {
