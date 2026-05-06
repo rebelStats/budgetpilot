@@ -60,9 +60,10 @@ async function classifyMerchantsWithAI(merchants) {
 ${CATEGORIES.join(", ")}
 
 Important rules:
-- "Transfers & Payments" is ONLY for person-to-person money transfers (e.g. "Transfer to John Smith", "Send to Mom"). Payment processors and gateways like Blue Media, Vimpay, Stripe, PayPal, etc. are NOT transfers — classify by what the user actually bought (or "Other" if unclear).
+- "Transfers & Payments" is ONLY assigned when the merchant string EXPLICITLY contains a transfer verb — phrases like "Transfer to <NAME>", "Transfer from <NAME>", "Send to <NAME>", "Sent to <NAME>", "Zelle money sent/received", "Wire to", or "Withdrawal from <NAME>". A merchant that is JUST a person's name without one of those verbs is almost always a small business (a barber, hair salon, freelancer, restaurant, doctor) — classify by best-guess context or "Other", NOT as a transfer. Foreign-language names (Polish, Hungarian, Spanish, French, etc.) are common for small businesses.
 - "Currency Exchange" is ONLY for explicit FX conversions between own wallets (e.g. "Exchanged to HUF").
 - "Cash & ATM" is for ATM withdrawals and cash advances.
+- Payment processors and gateways like Blue Media, Vimpay, Stripe, PayPal, Adyen, Mollie, etc. are NOT transfers — classify by what the user likely bought, or "Other" if unclear.
 - Use "Other" when truly unclear. Do not invent new categories.
 
 Return ONLY a JSON object mapping merchant → category.
