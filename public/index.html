@@ -485,11 +485,13 @@ let ACCOUNT_TYPE_LABELS = {
   loan_mortgage: "Loan / Mortgage",
   investment: "Investment",
 };
+let ACCOUNT_CURRENCIES = ["USD", "EUR", "GBP", "PLN", "HUF", "CHF", "CAD", "AUD", "JPY", "CNY", "CZK", "DKK", "NOK", "SEK", "RON"];
 async function loadAccountTypes() {
   try {
     const resp = await fetch("/api/account-types");
     const data = await resp.json();
-    if (data.types && data.labels) ACCOUNT_TYPE_LABELS = data.labels;
+    if (data.labels) ACCOUNT_TYPE_LABELS = data.labels;
+    if (Array.isArray(data.currencies) && data.currencies.length) ACCOUNT_CURRENCIES = data.currencies;
   } catch {}
 }
 
@@ -511,13 +513,19 @@ function openAccountReviewModal(accounts) {
 
   body.innerHTML = accounts.map((a, i) => {
     const guess = guessAccountType(a.account_type_provider);
-    const opts = Object.entries(ACCOUNT_TYPE_LABELS).map(([k, label]) =>
+    const typeOpts = Object.entries(ACCOUNT_TYPE_LABELS).map(([k, label]) =>
       `<option value="${k}"${k === guess ? ' selected' : ''}>${label}</option>`).join("");
+    const providerCcy = (a.currency || "USD").toUpperCase();
+    const ccyChoices = ACCOUNT_CURRENCIES.includes(providerCcy)
+      ? ACCOUNT_CURRENCIES
+      : [providerCcy, ...ACCOUNT_CURRENCIES];
+    const ccyOpts = ccyChoices.map(c =>
+      `<option value="${c}"${c === providerCcy ? ' selected' : ''}>${c}</option>`).join("");
     const maskBit = a.mask ? ` ····${a.mask}` : "";
     return `
       <div class="acct-review-row" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:10px;">
-        <div style="font-size:11px;color:var(--dim);margin-bottom:8px;">From provider: <span class="mono">${escapeHtml(a.account_type_provider || "?")}${maskBit}</span> · ${escapeHtml(a.currency || "USD")}</div>
-        <div style="display:grid;grid-template-columns:1fr 200px;gap:10px;">
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px;">From provider: <span class="mono">${escapeHtml(a.account_type_provider || "?")}${maskBit}</span> · provider currency <span class="mono">${escapeHtml(providerCcy)}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 160px 100px;gap:10px;">
           <div>
             <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Name</label>
             <input data-field="name" data-id="${a.id}" type="text" value="${escapeHtml(a.account_name || '')}"
@@ -528,7 +536,14 @@ function openAccountReviewModal(accounts) {
             <select data-field="type" data-id="${a.id}"
                     style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;font-family:inherit;outline:none;margin-top:4px;">
               <option value="">— select —</option>
-              ${opts}
+              ${typeOpts}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Currency</label>
+            <select data-field="currency" data-id="${a.id}"
+                    style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;font-family:inherit;outline:none;margin-top:4px;">
+              ${ccyOpts}
             </select>
           </div>
         </div>
@@ -552,12 +567,13 @@ async function submitAccountReview() {
   const entries = ids.map(id => {
     const nameInput = body.querySelector(`input[data-id="${id}"][data-field="name"]`);
     const typeSelect = body.querySelector(`select[data-id="${id}"][data-field="type"]`);
-    return { id, name: nameInput?.value.trim(), type: typeSelect?.value };
+    const ccySelect = body.querySelector(`select[data-id="${id}"][data-field="currency"]`);
+    return { id, name: nameInput?.value.trim(), type: typeSelect?.value, currency: ccySelect?.value };
   });
 
-  const missing = entries.find(e => !e.name || !e.type);
+  const missing = entries.find(e => !e.name || !e.type || !e.currency);
   if (missing) {
-    alert("Every account needs a name and a type before you can save.");
+    alert("Every account needs a name, type, and currency before you can save.");
     return;
   }
 
@@ -568,7 +584,7 @@ async function submitAccountReview() {
       const r = await fetch(`/api/accounts/${encodeURIComponent(e.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_name: e.name, account_type: e.type, status: "active" }),
+        body: JSON.stringify({ account_name: e.name, account_type: e.type, currency: e.currency, status: "active" }),
       });
       if (!r.ok) throw new Error(`Failed to update account ${e.id}`);
     }
@@ -887,6 +903,10 @@ function setTxnSearch(v) {
   renderTransactions();
 }
 
+// Categories that have their own dedicated tabs and should be hidden from
+// the "All transactions" view to keep it spend-only.
+const TXN_HIDDEN_CATEGORIES = new Set(["Currency Exchange", "Transfers & Payments"]);
+
 async function loadTransactions() {
   try {
     const days = dashWindow === "all" ? 100000 : Number(dashWindow);
@@ -894,7 +914,8 @@ async function loadTransactions() {
       fetch(`/api/transactions?days=${days}`),
       loadCategoriesAndOverrides(),
     ]);
-    txnData = await txResp.json();
+    const all = await txResp.json();
+    txnData = all.filter(t => !TXN_HIDDEN_CATEGORIES.has(t.category));
     renderCatFilter();
     renderTransactions();
   } catch (err) { console.error(err); }

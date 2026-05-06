@@ -381,6 +381,11 @@ app.post("/api/sync", async (req, res) => {
 // dropdown options also come from here.
 const ACCOUNT_TYPES = ["credit_card", "checking", "savings", "loan_mortgage", "investment"];
 
+// Currencies surfaced in the review modal dropdown. The provider's value is
+// preselected when present; user can override (and pick "Other" via free text
+// if they have an unusual currency — handled client-side as a custom value).
+const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "PLN", "HUF", "CHF", "CAD", "AUD", "JPY", "CNY", "CZK", "DKK", "NOK", "SEK", "RON"];
+
 app.get("/api/accounts", (req, res) => {
   const db = loadDB();
   res.json(db.accounts.map(({ access_token, ...rest }) => rest));
@@ -396,15 +401,16 @@ app.get("/api/account-types", (req, res) => {
       loan_mortgage: "Loan / Mortgage",
       investment: "Investment",
     },
+    currencies: COMMON_CURRENCIES,
   });
 });
 
-// Update an account row. Used to assign a user-chosen name + canonical type and
-// flip status from "pending" → "active" once the user reviews newly imported
-// accounts. Body: { account_name?, account_type?, status? }.
+// Update an account row. Used to assign a user-chosen name, canonical type,
+// currency, and flip status from "pending" → "active" once the user reviews
+// newly imported accounts. Body: { account_name?, account_type?, currency?, status? }.
 app.patch("/api/accounts/:id", (req, res) => {
   try {
-    const { account_name, account_type, status } = req.body || {};
+    const { account_name, account_type, currency, status } = req.body || {};
     const db = loadDB();
     const acct = db.accounts.find(a => a.id === req.params.id);
     if (!acct) return res.status(404).json({ error: "Account not found" });
@@ -418,11 +424,18 @@ app.patch("/api/accounts/:id", (req, res) => {
       }
       acct.account_type = account_type;
     }
+    if (typeof currency === "string" && currency.trim()) {
+      const upper = currency.trim().toUpperCase();
+      if (!/^[A-Z]{3}$/.test(upper)) {
+        return res.status(400).json({ error: "currency must be a 3-letter ISO code" });
+      }
+      acct.currency = upper;
+    }
     if (typeof status === "string" && (status === "active" || status === "pending")) {
       acct.status = status;
     }
     saveDB(db);
-    res.json({ id: acct.id, account_name: acct.account_name, account_type: acct.account_type, status: acct.status });
+    res.json({ id: acct.id, account_name: acct.account_name, account_type: acct.account_type, currency: acct.currency, status: acct.status });
   } catch (err) {
     console.error("PATCH /api/accounts error:", err.message);
     res.status(500).json({ error: "Failed to update account" });
