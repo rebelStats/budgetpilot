@@ -121,6 +121,7 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
     <button class="nav-btn active" onclick="showView('dashboard')">◉ Dashboard</button>
     <button class="nav-btn" onclick="showView('transactions')">≡ Transactions</button>
     <button class="nav-btn" onclick="showView('transfers')">⇄ Transfers</button>
+    <button class="nav-btn" onclick="showView('fx')">⇅ FX</button>
     <button class="nav-btn" onclick="showView('insights')">✦ AI Advisor</button>
     <button class="nav-btn" onclick="showView('import')">↥ Import</button>
     <button class="nav-btn" onclick="showView('connect')">⊕ Connect</button>
@@ -209,8 +210,8 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
   <div id="view-transfers" class="hidden">
     <div style="display:flex;justify-content:space-between;align-items:end;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
       <div>
-        <h2 style="font-size:22px;font-weight:600;">Transfers &amp; money movement</h2>
-        <p style="color:var(--muted);font-size:13px;margin-top:4px;">Credit-card payments, account-to-account transfers, top-ups, salary, broker activity, currency exchanges. Excluded from spend totals.</p>
+        <h2 style="font-size:22px;font-weight:600;">Transfers</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:4px;">Money coming in and going out: credit-card payments, account-to-account transfers, top-ups, salary, broker activity. Excluded from spend totals. Currency exchanges live on the FX tab.</p>
       </div>
       <input id="xfer-search" type="text" placeholder="Search merchant, description, source…" oninput="setXferSearch(this.value)"
              style="flex:1;min-width:220px;max-width:380px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:13px;font-family:inherit;outline:none;">
@@ -234,6 +235,31 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
         <span style="padding:12px 16px;text-align:right;">Amount</span>
       </div>
       <div class="txn-scroll" id="xfer-list"></div>
+    </div>
+  </div>
+
+  <!-- FX (CURRENCY EXCHANGE) VIEW -->
+  <div id="view-fx" class="hidden">
+    <div style="display:flex;justify-content:space-between;align-items:end;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+      <div>
+        <h2 style="font-size:22px;font-weight:600;">Currency exchanges</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:4px;">Wallet-to-wallet currency conversions (e.g. PLN → HUF on Revolut). Excluded from spend totals. Each row shows the original-currency amount and its USD-equivalent at the month-average ECB rate.</p>
+      </div>
+      <input id="fx-search" type="text" placeholder="Search…" oninput="setFxSearch(this.value)"
+             style="flex:1;min-width:180px;max-width:320px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:13px;font-family:inherit;outline:none;">
+    </div>
+
+    <div class="grid-2" id="fx-totals" style="margin-bottom:16px;"></div>
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="txn-header">
+        <span style="padding:12px 16px;">Date</span>
+        <span style="padding:12px 16px;">Description</span>
+        <span style="padding:12px 16px;">Currency pair</span>
+        <span style="padding:12px 16px;">Source</span>
+        <span style="padding:12px 16px;text-align:right;">Amount (USD)</span>
+      </div>
+      <div class="txn-scroll" id="fx-list"></div>
     </div>
   </div>
 
@@ -353,6 +379,7 @@ function showView(id) {
   if (id === "dashboard") loadDashboard();
   if (id === "transactions") loadTransactions();
   if (id === "transfers") loadTransfers();
+  if (id === "fx") loadFx();
   if (id === "connect") loadAccounts();
 }
 
@@ -1048,7 +1075,7 @@ let xferData = [];
 let xferDir = "all";   // "all" | "out" | "in"
 let xferSearch = "";
 
-const XFER_CATS = new Set(["Transfers & Payments", "Currency Exchange"]);
+const XFER_CATS = new Set(["Transfers & Payments"]);
 
 async function loadTransfers() {
   try {
@@ -1119,7 +1146,7 @@ function renderTransfers() {
     const dirBadge = isOut
       ? `<span class="badge" style="background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.4);font-size:10px;">↗ OUT</span>`
       : `<span class="badge" style="background:rgba(16,185,129,0.12);color:var(--green);border:1px solid rgba(16,185,129,0.4);font-size:10px;">↙ IN</span>`;
-    const catBadge = `<span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">${t.category === 'Currency Exchange' ? 'FX' : 'Transfer'}</span>`;
+    const catBadge = `<span class="badge" style="background:${catColor}22;color:${catColor};border:1px solid ${catColor}44">Transfer</span>`;
     return `
       <div class="txn-row">
         <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
@@ -1130,6 +1157,76 @@ function renderTransfers() {
       </div>
     `;
   }).join("") || `<div style="padding:24px;color:var(--dim);font-size:14px;text-align:center;">No transfers in this window. Click Sync transactions on the Connect tab to fetch the latest data.</div>`;
+}
+
+// ---- Currency exchange (FX) view ----
+let fxData = [];
+let fxSearch = "";
+
+async function loadFx() {
+  try {
+    const days = dashWindow === "all" ? 100000 : Number(dashWindow);
+    const resp = await fetch(`/api/transactions?days=${days}`);
+    const all = await resp.json();
+    fxData = all.filter(t => t.category === "Currency Exchange");
+    renderFx();
+  } catch (err) { console.error(err); }
+}
+
+function setFxSearch(v) { fxSearch = v.trim().toLowerCase(); renderFx(); }
+
+function renderFx() {
+  let rows = fxData.slice();
+  if (fxSearch) {
+    rows = rows.filter(t =>
+      (t.description || "").toLowerCase().includes(fxSearch) ||
+      (t.merchant || "").toLowerCase().includes(fxSearch) ||
+      (t.source || "").toLowerCase().includes(fxSearch) ||
+      (t.currency_original || "").toLowerCase().includes(fxSearch)
+    );
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date));
+
+  const totalUsd = rows.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const byPair = {};
+  rows.forEach(t => {
+    if (!t.currency_original) return;
+    const k = `${t.currency_original} → USD`;
+    byPair[k] = (byPair[k] || 0) + Math.abs(t.amount);
+  });
+  const topPair = Object.entries(byPair).sort((a, b) => b[1] - a[1])[0];
+
+  document.getElementById("fx-totals").innerHTML = `
+    <div class="card stat-card">
+      <div class="stat-label">Total exchanged (USD)</div>
+      <div class="stat-value mono" style="color:#0ea5e9">${fmt(totalUsd)}</div>
+      <div class="stat-sub">${rows.length} exchange${rows.length === 1 ? '' : 's'}</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-label">Most-used currency pair</div>
+      <div class="stat-value" style="font-size:18px;color:var(--accent-l)">${topPair ? topPair[0] : '—'}</div>
+      <div class="stat-sub">${topPair ? fmt(topPair[1]) : ''}</div>
+    </div>
+  `;
+
+  document.getElementById("fx-list").innerHTML = rows.map(t => {
+    const d = new Date(t.date);
+    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const srcColor = sourceColor(t.source);
+    const origAmt = (t.amount_original ?? t.amount);
+    const fromCcy = t.currency_original || "USD";
+    const pair = `<span class="badge" style="background:rgba(14,165,233,0.15);color:#0ea5e9;border:1px solid rgba(14,165,233,0.4);font-size:11px;font-family:var(--font-mono);">${escapeHtml(fromCcy)} → USD</span>`;
+    const amountHtml = `<span class="mono" style="text-align:right;font-size:12px;color:#0ea5e9">${fmt(Math.abs(t.amount))}<br><span style="font-size:10px;color:var(--dim);font-weight:400;">${origAmt.toFixed(2)} ${fromCcy}</span></span>`;
+    return `
+      <div class="txn-row">
+        <span class="mono" style="font-size:11px;color:var(--dim)">${dateStr}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">${escapeHtml(t.description)}</span>
+        <span>${pair}</span>
+        <span class="badge" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${escapeHtml(t.source || '?')}</span>
+        ${amountHtml}
+      </div>
+    `;
+  }).join("") || `<div style="padding:24px;color:var(--dim);font-size:14px;text-align:center;">No currency exchanges in this window.</div>`;
 }
 
 // ---- AI Insights ----
