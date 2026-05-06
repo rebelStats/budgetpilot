@@ -8,8 +8,8 @@ Personal finance dashboard that connects your bank accounts via Teller (US) — 
 Browser (Teller Connect + Dashboard)
   ↕
 Express Server (Node.js)
-  ├── lib/providers/teller.js  → fetches transactions via mTLS REST API
-  ├── lib/providers/gocardless.js → planned for EU/PSD2 (stubbed)
+  ├── lib/providers/teller.js  → US bank data via mTLS REST API
+  ├── lib/providers/saltedge.js → 60+ non-US countries via SaltEdge hosted widget (stubbed)
   ├── lib/db.js                → JSON file storage (single-user local)
   └── Claude API               → categorization (Haiku) + advisor chat (Opus)
 ```
@@ -73,9 +73,9 @@ You can also import CSV/PDF statements (e.g. Revolut Poland statements) via the 
 
 For most personal use cases, **`development`** is the right tier.
 
-## EU bank coverage (planned)
+## Non-US bank coverage (planned)
 
-GoCardless Bank Account Data (PSD2 Open Banking) is stubbed in `lib/providers/gocardless.js` and will be wired in when EU users come online. The provider abstraction means it slots in alongside Teller without rewriting any other layer.
+SaltEdge Account Information API is stubbed in `lib/providers/saltedge.js` and will be wired in once SaltEdge App-id + Secret credentials are configured. SaltEdge officially supports 60+ countries — full list is exposed by `GET /api/connect/countries`. The provider abstraction means it slots in alongside Teller without rewriting any other layer.
 
 ## Features
 

@@ -4,7 +4,7 @@
 
 ## What MeridianWallet is
 
-MeridianWallet is an open-source personal finance dashboard that runs entirely on a single user's local machine. It connects to bank accounts via Teller (US), parses uploaded statement files (CSV/PDF), categorizes transactions, and surfaces spending insights through a Claude-powered AI advisor. GoCardless Bank Account Data (EU/PSD2) is planned as an additional provider; the codebase contains a stub adapter pending implementation.
+MeridianWallet is an open-source personal finance dashboard that runs entirely on a single user's local machine. It connects to bank accounts via Teller (US), parses uploaded statement files (CSV/PDF), categorizes transactions, and surfaces spending insights through a Claude-powered AI advisor. SaltEdge Account Information API is planned for non-US bank connections (60+ countries); the codebase contains a stub adapter pending credentials.
 
 The application is intended for personal use by an individual operator. The operator and the data subject are the same person. There is no public deployment, no shared backend, and no other end users.
 
@@ -40,7 +40,7 @@ MeridianWallet makes outbound network requests to exactly three external service
 2. **Anthropic** (`api.anthropic.com`) — for transaction categorization (Claude Haiku) and the AI advisor chat (Claude Opus). Merchant names, transaction amounts, dates, and categories are sent as part of the model context. Account numbers and access tokens are never sent. Anthropic's privacy policy: <https://www.anthropic.com/legal/privacy>.
 3. **Frankfurter** (`api.frankfurter.app`) — for European Central Bank exchange rates used to convert non-USD transactions. No personal data is sent; only date ranges and currency codes.
 
-Future provider: **GoCardless Bank Account Data** (`bankaccountdata.gocardless.com`) for EU bank connections under PSD2 Open Banking. Not currently active; will be added when EU users come online. GoCardless's privacy policy: <https://gocardless.com/privacy/>.
+Future provider: **SaltEdge** (`www.saltedge.com`) for non-US bank connections in 60+ countries via Account Information API. Not currently active; will be added once SaltEdge App-id + Secret credentials are configured. SaltEdge's privacy policy: <https://www.saltedge.com/legal/privacy_policy>.
 
 ## What MeridianWallet does NOT do
 

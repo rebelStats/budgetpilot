@@ -168,10 +168,82 @@ function isStoredCreditCardPayment(t) {
 
 // ---------------------------------------------------------------------------
 // Routes: Connections (provider-agnostic)
-//   Dispatches to the provider module (Teller for new connections;
-//   gocardless future). Plaid was the previous provider; historical
-//   plaid_legacy connections remain readable but cannot be re-synced.
+//   Dispatches to the provider module: Teller for US, SaltEdge for the rest
+//   of the world. Plaid was the previous US provider; historical plaid_legacy
+//   connections remain readable but cannot be re-synced.
 // ---------------------------------------------------------------------------
+
+// Countries supported for new connections, with the provider that handles each.
+// US goes through Teller (mTLS REST). Everything else goes through SaltEdge
+// (hosted-widget redirect flow). The list mirrors SaltEdge's officially
+// supported coverage; if SaltEdge drops or adds countries this list updates.
+const SUPPORTED_COUNTRIES = [
+  { code: "US", name: "United States", provider: "teller" },
+  { code: "AE", name: "United Arab Emirates", provider: "saltedge" },
+  { code: "AM", name: "Armenia", provider: "saltedge" },
+  { code: "AR", name: "Argentina", provider: "saltedge" },
+  { code: "AT", name: "Austria", provider: "saltedge" },
+  { code: "AU", name: "Australia", provider: "saltedge" },
+  { code: "AZ", name: "Azerbaijan", provider: "saltedge" },
+  { code: "BA", name: "Bosnia and Herzegovina", provider: "saltedge" },
+  { code: "BB", name: "Barbados", provider: "saltedge" },
+  { code: "BD", name: "Bangladesh", provider: "saltedge" },
+  { code: "BE", name: "Belgium", provider: "saltedge" },
+  { code: "BG", name: "Bulgaria", provider: "saltedge" },
+  { code: "BH", name: "Bahrain", provider: "saltedge" },
+  { code: "BR", name: "Brazil", provider: "saltedge" },
+  { code: "CA", name: "Canada", provider: "saltedge" },
+  { code: "CH", name: "Switzerland", provider: "saltedge" },
+  { code: "CL", name: "Chile", provider: "saltedge" },
+  { code: "CO", name: "Colombia", provider: "saltedge" },
+  { code: "CY", name: "Cyprus", provider: "saltedge" },
+  { code: "CZ", name: "Czech Republic", provider: "saltedge" },
+  { code: "DE", name: "Germany", provider: "saltedge" },
+  { code: "DK", name: "Denmark", provider: "saltedge" },
+  { code: "EE", name: "Estonia", provider: "saltedge" },
+  { code: "ES", name: "Spain", provider: "saltedge" },
+  { code: "FI", name: "Finland", provider: "saltedge" },
+  { code: "FR", name: "France", provider: "saltedge" },
+  { code: "GB", name: "United Kingdom", provider: "saltedge" },
+  { code: "GE", name: "Georgia", provider: "saltedge" },
+  { code: "GR", name: "Greece", provider: "saltedge" },
+  { code: "HR", name: "Croatia", provider: "saltedge" },
+  { code: "HU", name: "Hungary", provider: "saltedge" },
+  { code: "IE", name: "Ireland", provider: "saltedge" },
+  { code: "IL", name: "Israel", provider: "saltedge" },
+  { code: "IS", name: "Iceland", provider: "saltedge" },
+  { code: "IT", name: "Italy", provider: "saltedge" },
+  { code: "JP", name: "Japan", provider: "saltedge" },
+  { code: "KZ", name: "Kazakhstan", provider: "saltedge" },
+  { code: "LI", name: "Liechtenstein", provider: "saltedge" },
+  { code: "LT", name: "Lithuania", provider: "saltedge" },
+  { code: "LU", name: "Luxembourg", provider: "saltedge" },
+  { code: "LV", name: "Latvia", provider: "saltedge" },
+  { code: "ME", name: "Montenegro", provider: "saltedge" },
+  { code: "MK", name: "North Macedonia", provider: "saltedge" },
+  { code: "MT", name: "Malta", provider: "saltedge" },
+  { code: "MX", name: "Mexico", provider: "saltedge" },
+  { code: "NL", name: "Netherlands", provider: "saltedge" },
+  { code: "NO", name: "Norway", provider: "saltedge" },
+  { code: "NZ", name: "New Zealand", provider: "saltedge" },
+  { code: "PH", name: "Philippines", provider: "saltedge" },
+  { code: "PL", name: "Poland", provider: "saltedge" },
+  { code: "PT", name: "Portugal", provider: "saltedge" },
+  { code: "RO", name: "Romania", provider: "saltedge" },
+  { code: "RS", name: "Serbia", provider: "saltedge" },
+  { code: "SA", name: "Saudi Arabia", provider: "saltedge" },
+  { code: "SE", name: "Sweden", provider: "saltedge" },
+  { code: "SG", name: "Singapore", provider: "saltedge" },
+  { code: "SI", name: "Slovenia", provider: "saltedge" },
+  { code: "SK", name: "Slovakia", provider: "saltedge" },
+  { code: "TH", name: "Thailand", provider: "saltedge" },
+  { code: "TR", name: "Turkey", provider: "saltedge" },
+  { code: "UA", name: "Ukraine", provider: "saltedge" },
+];
+
+app.get("/api/connect/countries", (req, res) => {
+  res.json({ countries: SUPPORTED_COUNTRIES });
+});
 
 app.post("/api/connect/init", async (req, res) => {
   try {

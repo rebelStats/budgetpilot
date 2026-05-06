@@ -315,15 +315,14 @@ body { background: var(--bg); color: var(--text); font-family: 'DM Sans', -apple
 
   <!-- CONNECT VIEW -->
   <div id="view-connect" class="hidden">
-    <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;">Connect accounts</h2>
-    <p style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">
-      Link your bank accounts. Your credentials go directly to the data provider (Teller for US banks) — MeridianWallet never sees your login info.
-    </p>
-
-    <div class="connect-card" onclick="openConnect('teller')">
-      <div style="font-size:40px;margin-bottom:12px;">⊕</div>
-      <div style="font-size:16px;font-weight:500;margin-bottom:8px;">Connect a bank account</div>
-      <div style="font-size:13px;color:var(--dim);">12,000+ supported institutions across 18 countries</div>
+    <div style="display:flex;justify-content:space-between;align-items:end;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
+      <div>
+        <h2 style="font-size:22px;font-weight:600;">Bank account connections</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:4px;line-height:1.6;">
+          Link your bank accounts. Credentials go directly to the data provider — MeridianWallet never sees your login info.
+        </p>
+      </div>
+      <button class="btn btn-primary" onclick="openCountryPicker()">⊕ Link new bank</button>
     </div>
 
     <div style="margin-top:24px;">
@@ -383,16 +382,78 @@ function showView(id) {
   if (id === "connect") loadAccounts();
 }
 
+// ---- Country picker (entry point for all new connections) ----
+let CONNECT_COUNTRIES = [];
+
+async function loadConnectCountries() {
+  if (CONNECT_COUNTRIES.length) return CONNECT_COUNTRIES;
+  try {
+    const resp = await fetch("/api/connect/countries");
+    const data = await resp.json();
+    CONNECT_COUNTRIES = data.countries || [];
+  } catch {
+    CONNECT_COUNTRIES = [];
+  }
+  return CONNECT_COUNTRIES;
+}
+
+async function openCountryPicker() {
+  await loadConnectCountries();
+  const select = document.getElementById("country-picker-select");
+  // Render with US selected by default — it's the most-likely starting point
+  // and routes through the already-wired Teller flow.
+  select.innerHTML = CONNECT_COUNTRIES.map(c =>
+    `<option value="${c.code}" data-provider="${c.provider}"${c.code === "US" ? ' selected' : ''}>${escapeHtml(c.name)} (${c.code})</option>`
+  ).join("");
+  updateCountryPickerProvider();
+  document.getElementById("country-picker-overlay").style.display = "flex";
+}
+
+function closeCountryPicker() {
+  document.getElementById("country-picker-overlay").style.display = "none";
+}
+
+function updateCountryPickerProvider() {
+  const select = document.getElementById("country-picker-select");
+  const opt = select.options[select.selectedIndex];
+  const provider = opt?.dataset.provider;
+  const country = opt?.text || "";
+  const note = document.getElementById("country-picker-provider-note");
+  if (provider === "teller") {
+    note.innerHTML = `<strong style="color:var(--text)">${escapeHtml(country)}</strong> connects via <strong style="color:var(--text)">Teller</strong> — a modal will open and you'll log in with your bank credentials. Free Development tier supports ~250 US institutions.`;
+  } else if (provider === "saltedge") {
+    note.innerHTML = `<strong style="color:var(--text)">${escapeHtml(country)}</strong> connects via <strong style="color:var(--text)">SaltEdge</strong> — you'll be redirected to their hosted widget where you pick your bank and authenticate. (SaltEdge integration is stubbed; the connect button will show an error until credentials are configured.)`;
+  } else {
+    note.innerHTML = `<span style="color:var(--amber)">No provider configured for this country.</span>`;
+  }
+}
+
+async function continueFromCountryPicker() {
+  const select = document.getElementById("country-picker-select");
+  const opt = select.options[select.selectedIndex];
+  const provider = opt?.dataset.provider;
+  const code = opt?.value;
+  const btn = document.getElementById("country-picker-continue");
+
+  if (!provider) {
+    alert("That country isn't supported. Pick one with a configured provider.");
+    return;
+  }
+
+  closeCountryPicker();
+  await openConnect(provider, { country: code });
+}
+
 // ---- Generic Connect (provider-agnostic) ----
 // Phase 3: opens whichever provider the caller specifies. Teller uses a modal
 // (in-place callback); GoCardless will use a redirect. Both finish by POSTing
 // the success payload to /api/connect/complete.
-async function openConnect(provider) {
+async function openConnect(provider, opts = {}) {
   try {
     const resp = await fetch("/api/connect/init", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider }),
+      body: JSON.stringify({ provider, country: opts.country }),
     });
     const init = await resp.json();
     if (!resp.ok || init.error) {
@@ -1537,6 +1598,38 @@ loadAccounts();
     <div style="display:flex;justify-content:space-between;gap:8px;">
       <button class="btn btn-outline" onclick="closeAccountReviewModal()">Skip for now</button>
       <button id="account-review-submit" class="btn btn-primary" onclick="submitAccountReview()">Save and sync</button>
+    </div>
+  </div>
+</div>
+
+<!-- Country picker modal — start here when user clicks "Link new bank". -->
+<!-- US selects Teller (mTLS modal), everything else selects SaltEdge (redirect). -->
+<div id="country-picker-overlay" style="display:none;position:fixed;inset:0;background:rgba(8,12,20,0.78);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;max-width:560px;width:100%;">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:6px;">Start a connection with your bank</h2>
+    <p style="color:var(--muted);font-size:13px;line-height:1.55;margin-bottom:8px;">
+      Select your country and bank to start the secure connection process. When given a list of your bank accounts, please choose all that you intend to connect.
+    </p>
+    <p style="color:var(--dim);font-size:12px;line-height:1.5;margin-bottom:18px;">
+      Your bank credentials are entered directly with our regulated banking partners (Teller for US, SaltEdge for everywhere else) and are never shared with or stored by MeridianWallet.
+    </p>
+
+    <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:8px;padding:10px 14px;margin-bottom:18px;color:var(--accent-l);font-size:12px;">
+      ⓘ Select all the accounts from this bank you want to link. You only need one connection per bank.
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">🌐 Select country</label>
+      <select id="country-picker-select" onchange="updateCountryPickerProvider()"
+              style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:6px;font-size:14px;font-family:inherit;outline:none;margin-top:6px;">
+      </select>
+    </div>
+
+    <div id="country-picker-provider-note" style="font-size:12px;color:var(--muted);margin-bottom:18px;padding:10px 14px;background:var(--surface);border-radius:6px;border:1px solid var(--border);"></div>
+
+    <div style="display:flex;justify-content:space-between;gap:8px;">
+      <button class="btn btn-outline" onclick="closeCountryPicker()">Cancel</button>
+      <button id="country-picker-continue" class="btn btn-primary" onclick="continueFromCountryPicker()">Continue →</button>
     </div>
   </div>
 </div>
